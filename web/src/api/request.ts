@@ -40,7 +40,12 @@ let refreshing: Promise<boolean> | null = null
 
 const bareHttp = axios.create({ baseURL: '/api', timeout: 30000 })
 
-async function refreshAccessToken(): Promise<boolean> {
+/**
+ * 刷新访问令牌（并发去重）。
+ *
+ * <p>axios 拦截器内部用；流式接口绕开了 axios，也需要在 401 时手动调一次，所以导出。</p>
+ */
+export async function refreshAccessToken(): Promise<boolean> {
   const token = getRefreshToken()
   if (!token) {
     return false

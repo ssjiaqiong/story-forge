@@ -1,4 +1,5 @@
-import { api } from './request'
+import { api, ApiError, ErrorCodes, refreshAccessToken, type ApiResult } from './request'
+import { clearTokens, getAccessToken } from '@/utils/auth-storage'
 import type { CharacterDraft } from './bookshelf'
 import type { FactionVO } from './faction'
 import type { PageResult } from './novel'
@@ -406,6 +407,172 @@ export interface ContentGenerateResultVO {
  */
 export function generateContent(chapterId: string, payload: ContentGeneratePayload) {
   return api.post<ContentGenerateResultVO>(`/bookshelf/chapters/${chapterId}/generate`, payload, 480000)
+}
+
+/* ------------------------------------------------------------------ */
+/* 流式写正文                                                          */
+/* ------------------------------------------------------------------ */
+
+/** 生成开始前的元信息：检索已完成，正文还没开始写 */
+export interface ContentStreamMeta {
+  model?: string
+  targetWords: number
+  mode: string
+  search?: SearchBundleVO
+}
+
+export interface ContentStreamHandlers {
+  onMeta?: (meta: ContentStreamMeta) => void
+  /** 一个增量；可能含换行，累加即可，不要按行渲染 */
+  onDelta?: (text: string) => void
+  /** 由调用方在 fetch 结束后自行取返回值，这里不重复回调 */
+  signal?: AbortSignal
+}
+
+/**
+ * 流式写正文（SSE）。
+ *
+ * <p>用 fetch 而不是 axios：axios 的 XHR 适配器拿不到流式响应体，只能等整段结束。
+ * 代价是拦截器里的逻辑要手写一遍——401 时手动刷新令牌后重试一次。</p>
+ *
+ * <p>两种失败形式都要处理：</p>
+ * <ul>
+ *   <li>建流之前就失败（本章正在生成、限流、参数非法）→ 普通 JSON，直接抛 {@link ApiError}；</li>
+ *   <li>建流之后失败 → {@code error} 事件，同样抛 {@link ApiError}。</li>
+ * </ul>
+ *
+ * @returns 成功时的完整结果；连接中途断掉（未收到 done）时抛错，已收到的文本由调用方保留
+ */
+export async function generateContentStream(
+  chapterId: string,
+  payload: ContentGeneratePayload,
+  handlers: ContentStreamHandlers = {}
+): Promise<ContentGenerateResultVO> {
+  const url = `/api/bookshelf/chapters/${chapterId}/generate/stream`
+  if (typeof ReadableStream === 'undefined') {
+    // 浏览器不支持流式读取：退回同步接口，结果一样，只是没有打字机效果
+    const result = await api.post<ContentGenerateResultVO>(
+      `/bookshelf/chapters/${chapterId}/generate`, payload, 480000)
+    handlers.onMeta?.({
+      model: result.model,
+      targetWords: payload.targetWords ?? 2500,
+      mode: payload.mode ?? 'REPLACE',
+      search: result.search
+    })
+    handlers.onDelta?.(result.generated || result.content || '')
+    return result
+  }
+  const send = () => {
+    const token = getAccessToken()
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(payload),
+      signal: handlers.signal
+    })
+  }
+
+  let response = await send()
+  if (response.status === 401) {
+    const refreshed = await refreshAccessToken()
+    if (!refreshed) {
+      clearTokens()
+      if (window.location.pathname !== '/login') {
+        window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`
+      }
+      throw new ApiError(ErrorCodes.UNAUTHORIZED, '登录状态已失效，请重新登录')
+    }
+    response = await send()
+  }
+
+  const contentType = response.headers.get('Content-Type') || ''
+  if (!contentType.includes('text/event-stream')) {
+    // 建流前失败：后端按普通 JSON 返回统一响应体
+    const body = (await response.json().catch(() => null)) as ApiResult | null
+    throw new ApiError(body?.code ?? response.status ?? -1, body?.message || `请求失败（HTTP ${response.status}）`)
+  }
+  if (!response.body) {
+    throw new ApiError(-1, '当前浏览器不支持流式读取，请升级浏览器')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  let result: ContentGenerateResultVO | null = null
+  let failure: ApiError | null = null
+
+  const dispatch = (event: string, data: string) => {
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(data) as Record<string, unknown>
+    } catch {
+      return // 脏帧跳过，不中断整条流
+    }
+    if (event === 'meta') {
+      handlers.onMeta?.(parsed as unknown as ContentStreamMeta)
+      return
+    }
+    if (event === 'delta') {
+      const text = typeof parsed.text === 'string' ? parsed.text : ''
+      if (text) {
+        handlers.onDelta?.(text)
+      }
+      return
+    }
+    if (event === 'done') {
+      result = parsed as unknown as ContentGenerateResultVO
+      return
+    }
+    if (event === 'error') {
+      failure = new ApiError(Number(parsed.code ?? -1), String(parsed.message || 'AI 生成失败'))
+    }
+  }
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) {
+        break
+      }
+      buffer += decoder.decode(value, { stream: true })
+      for (;;) {
+        const match = /\r?\n\r?\n/.exec(buffer)
+        if (!match) {
+          break
+        }
+        const frame = buffer.slice(0, match.index)
+        buffer = buffer.slice(match.index + match[0].length)
+        let eventName = 'message'
+        const dataLines: string[] = []
+        for (const line of frame.split(/\r?\n/)) {
+          if (line.startsWith(':')) {
+            continue
+          }
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim()
+          } else if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).replace(/^ /, ''))
+          }
+        }
+        if (dataLines.length) {
+          dispatch(eventName, dataLines.join('\n'))
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  if (failure) {
+    throw failure
+  }
+  if (!result) {
+    throw new ApiError(-1, '生成连接意外中断，已收到的内容保留在编辑区')
+  }
+  return result
 }
 
 

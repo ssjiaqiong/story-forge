@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.storyforge.common.api.ErrorCode;
 import com.storyforge.common.api.R;
 import com.storyforge.config.SecurityProperties;
+import jakarta.servlet.DispatcherType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -67,6 +68,9 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(registry -> registry
+                        // 异步二次派发（SSE 收尾）不再重复鉴权：原始请求已经过一次完整校验，
+                        // 而 JwtAuthenticationFilter 作为 OncePerRequestFilter 本来就不会在 ASYNC 上重跑
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         // 认证入口：登录 / 刷新令牌 / 已关闭的自助注册（需放行才能返回业务码 30030）
                         .requestMatchers("/api/auth/login", "/api/auth/refresh", "/api/auth/register").permitAll()
                         // 运维与文档

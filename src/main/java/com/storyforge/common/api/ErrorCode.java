@@ -100,6 +100,7 @@ public enum ErrorCode {
     AGENT_OPERATION_INVALID(40060, "智能助手返回了无法识别的修改指令", 400),
     CHAPTER_LOCKED(40061, "本章已标记为「已完成」，正文与标题不可修改；如需修改请先把状态改回草稿或写作中", 400),
     CHAPTER_VERSION_NOT_FOUND(40062, "历史版本不存在或已被删除", 404),
+    CONTENT_GENERATE_RUNNING(40063, "本章正在生成中，请等它结束或先停止当前生成", 409),
 
     /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),

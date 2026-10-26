@@ -670,7 +670,7 @@
               <div class="editor-head">
                 <span class="editor-title">{{ editingChapter?.volumeTitle || '' }} 第 {{ editingChapter?.chapterNo }} 章</span>
                 <div class="editor-actions">
-                  <el-button size="small" :icon="Clock" @click="openVersionDrawer">历史</el-button>
+                  <el-button size="small" :icon="Clock" :disabled="contentStreaming" @click="openVersionDrawer">历史</el-button>
                   <el-button size="small" :icon="MagicStick" :disabled="aiContentGenerating || contentLocked" @click="openAiContentDialog">
                     AI 写本章
                   </el-button>
@@ -685,8 +685,8 @@
                   </el-select>
                   <span class="editor-words">{{ contentWords }} 字</span>
                   <template v-if="contentEditing">
-                    <el-button size="small" @click="cancelContentEdit">取消</el-button>
-                    <el-button size="small" type="primary" :loading="contentSaving" @click="saveContent">保存正文</el-button>
+                    <el-button size="small" :disabled="contentStreaming" @click="cancelContentEdit">取消</el-button>
+                    <el-button size="small" type="primary" :loading="contentSaving" :disabled="contentStreaming" @click="saveContent">保存正文</el-button>
                   </template>
                   <el-tooltip
                     v-else
@@ -699,7 +699,7 @@
                         size="small"
                         type="primary"
                         :icon="EditPen"
-                        :disabled="contentLocked || statusSaving"
+                        :disabled="contentLocked || statusSaving || contentStreaming"
                         @click="startContentEdit"
                       >编辑</el-button>
                     </span>
@@ -735,11 +735,23 @@
                 <span>本章已标记为「已完成」，正文已锁定，仅供查看。如需修改，请先把上方状态改回「草稿」或「写作中」。</span>
               </div>
 
+              <div v-if="contentStreaming" class="stream-bar">
+                <span class="stream-dot" />
+                <strong class="stream-label">AI 正在写这一章</strong>
+                <span class="stream-meta">已生成 {{ contentWords }} / 目标 {{ streamTargetWords }} 字</span>
+                <span v-if="streamFirstTokenMs !== null" class="stream-meta">首字 {{ (streamFirstTokenMs / 1000).toFixed(1) }}s</span>
+                <span v-if="aiContentElapsed > 0" class="stream-meta">已用 {{ aiContentElapsed }}s</span>
+                <span class="stream-spacer" />
+                <el-button size="small" :icon="VideoPause" @click="stopContentStream">停止</el-button>
+              </div>
+
               <el-input
                 v-if="contentEditing"
+                ref="contentEditorRef"
                 v-model="contentDraft"
                 type="textarea"
                 :autosize="{ minRows: 18, maxRows: 40 }"
+                :readonly="contentStreaming"
                 class="editor-textarea"
                 placeholder="从这里开始写正文……"
               />
@@ -1271,13 +1283,11 @@
       :show-close="!aiContentGenerating"
       destroy-on-close
     >
-      <div v-if="aiContentGenerating" class="ai-generating">
-        <el-icon class="spin"><Loading /></el-icon>
-        <p class="ai-title">AI 正在写这一章</p>
-        <p class="ai-desc">按本章大纲、参与人物、物品势力与前情成稿，通常 60~180 秒，单次最长 5 分钟</p>
-        <p class="ai-elapsed">已用 {{ aiContentElapsed }} 秒</p>
+      <div class="ai-generating-note">
+        <el-icon><MagicStick /></el-icon>
+        <span>点「开始写」后弹窗会关闭，正文在编辑区逐个字出现，随时可以点「停止」；停止或断开时这一章不会写进库里。</span>
       </div>
-      <el-form v-else label-width="86px">
+      <el-form label-width="86px">
         <el-alert
           type="info"
           :closable="false"
@@ -1323,8 +1333,8 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button :disabled="aiContentGenerating" @click="aiContentDialog.visible = false">取消</el-button>
-        <el-button type="primary" :loading="aiContentGenerating" @click="submitAiContent">开始写</el-button>
+        <el-button @click="aiContentDialog.visible = false">取消</el-button>
+        <el-button type="primary" :disabled="contentStreaming" @click="submitAiContent">开始写</el-button>
       </template>
     </el-dialog>
 
@@ -2043,7 +2053,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, EditPen, Files, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User } from '@element-plus/icons-vue'
+import { ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, EditPen, Files, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
 import {
   exportNovelTxt,
   getNovelDetail,
@@ -2092,7 +2102,7 @@ import {
   deleteRelation,
   deleteTimeline,
   generateCharacters,
-  generateContent,
+  generateContentStream,
   generateEvents,
   generateItems,
   generateMasterOutlines,
@@ -3109,27 +3119,60 @@ async function submitAiContent() {
   if (!activeChapterId.value) {
     return
   }
+  const chapterId = activeChapterId.value
+  const mode = aiContentDialog.mode
+  // APPEND 的基线要在清空草稿前取：边写边追加，作者看到的就是最终的连续文本
+  const baseContent = mode === 'APPEND' && contentDraft.value.trim()
+    ? contentDraft.value.replace(/\s+$/, '') + '\n\n'
+    : ''
+
+  aiContentDialog.visible = false
   aiContentGenerating.value = true
+  contentStreaming.value = true
+  streamTargetWords.value = aiContentDialog.targetWords
+  streamFirstTokenMs.value = null
   aiContentElapsed.value = 0
   aiContentTimer = window.setInterval(() => {
     aiContentElapsed.value += 1
   }, 1000)
+  contentDraft.value = baseContent
+  contentEditing.value = true
+  contentSearch.value = null
+  contentAbort = new AbortController()
+  const startedAt = performance.now()
+
   try {
-    const result = await generateContent(activeChapterId.value, {
+    const result = await generateContentStream(chapterId, {
       prompt: aiContentDialog.prompt.trim() || undefined,
       targetWords: aiContentDialog.targetWords,
-      mode: aiContentDialog.mode
+      mode
+    }, {
+      signal: contentAbort.signal,
+      onMeta: (meta) => {
+        streamTargetWords.value = meta.targetWords || aiContentDialog.targetWords
+        contentSearch.value = meta.search || null
+      },
+      onDelta: (text) => {
+        if (streamFirstTokenMs.value === null) {
+          streamFirstTokenMs.value = Math.round(performance.now() - startedAt)
+        }
+        contentDraft.value += text
+        scrollEditorToBottom()
+      }
     })
-    aiContentDialog.visible = false
-    contentSearch.value = result.search || null
-    contentDraft.value = result.content || ''
+
+    // done：用服务端落库的完整正文兜底覆盖，防止个别增量丢包导致末端缺字
+    contentDraft.value = result.content || contentDraft.value
     contentStatus.value = 'WRITING'
     if (editingChapter.value) {
       // AI 已把正文写进库，本地基准同步过去：取消编辑时回到这份新内容而不是旧稿
-      editingChapter.value = { ...editingChapter.value, content: result.content || '', wordCount: result.wordCount, status: 'WRITING' }
+      editingChapter.value = {
+        ...editingChapter.value,
+        content: result.content || '',
+        wordCount: result.wordCount,
+        status: 'WRITING'
+      }
     }
-    // 刚生成的稿子通常还要打磨，直接进编辑态
-    contentEditing.value = true
     await loadChapters()
     const searched = result.search && result.search.results.length
       ? `，参考 ${result.search.results.length} 条资料` : ''
@@ -3138,16 +3181,46 @@ async function submitAiContent() {
     if (result.newItems?.length) created.push(`${result.newItems.length} 件物品`)
     if (result.newFactions?.length) created.push(`${result.newFactions.length} 个势力`)
     const built = created.length ? `，并补建 ${created.join('、')}` : ''
-    ElMessage.success(`已写入 ${result.generatedWords} 个汉字${searched}${built}`)
+    const firstToken = streamFirstTokenMs.value === null
+      ? '' : `，首字 ${(streamFirstTokenMs.value / 1000).toFixed(1)}s`
+    ElMessage.success(`已写入 ${result.generatedWords} 个汉字${searched}${built}${firstToken}`)
     if (result.newCharacters?.length) await reloadCharacters()
     if (result.newItems?.length) await loadItems()
     if (result.newFactions?.length) await loadFactions()
   } catch (error) {
-    ElMessage.error((error as Error).message || 'AI 写作失败，请重试')
+    const aborted = (error as DOMException | undefined)?.name === 'AbortError'
+    if (aborted) {
+      // 主动停止：服务端不落库，已收到的文字留在编辑区当草稿
+      ElMessage.info(`已停止，当前 ${contentWords.value} 字还没有保存；确认后点「保存正文」`)
+    } else {
+      ElMessage.error((error as Error).message || 'AI 写作失败，请重试')
+    }
   } finally {
+    contentStreaming.value = false
     aiContentGenerating.value = false
+    contentAbort = null
     stopAiContentTimer()
   }
+}
+
+/** 停止推流：中止 fetch → 服务端 send 失败 → 上游断开且不落库 */
+function stopContentStream() {
+  contentAbort?.abort()
+}
+
+/** 推流时让编辑区跟着走：每帧最多滚一次，避免上千个增量各触发一次布局 */
+function scrollEditorToBottom() {
+  if (editorScrollPending) {
+    return
+  }
+  editorScrollPending = true
+  window.requestAnimationFrame(() => {
+    editorScrollPending = false
+    const textarea = (contentEditorRef.value as { textarea?: HTMLTextAreaElement } | undefined)?.textarea
+    if (textarea) {
+      textarea.scrollTop = textarea.scrollHeight
+    }
+  })
 }
 
 function stopAiContentTimer() {
@@ -3162,6 +3235,8 @@ onBeforeUnmount(() => {
   stopAiEventTimer()
   stopAiOutlineTimer()
   stopAiContentTimer()
+  // 离开页面就别让后台继续生成：断开连接后服务端会放弃落库
+  contentAbort?.abort()
   stopAiItemTimer()
   stopAnalysisTimer()
 })
@@ -3308,6 +3383,16 @@ const aiContentGenerating = ref(false)
 const aiContentElapsed = ref(0)
 let aiContentTimer: number | undefined
 const contentSearch = ref<SearchBundleVO | null>(null)
+
+/* ---------- 正文流式生成 ---------- */
+/** 正在逐字推流：编辑区只读、工具栏按钮全部让位给「停止」 */
+const contentStreaming = ref(false)
+const streamTargetWords = ref(2500)
+/** 首字延迟（毫秒），-1 表示还没收到第一个字 */
+const streamFirstTokenMs = ref<number | null>(null)
+const contentEditorRef = ref()
+let contentAbort: AbortController | null = null
+let editorScrollPending = false
 
 /* ---------- 物品 ---------- */
 const items = ref<ItemVO[]>([])
@@ -3642,6 +3727,10 @@ async function removeChapter(chapter: ChapterVO) {
 
 /* ---------- 正文 ---------- */
 async function selectChapter(chapter: ChapterVO) {
+  if (contentStreaming.value) {
+    ElMessage.warning('这一章还在生成中，先点「停止」再切章')
+    return
+  }
   if (chapter.id === activeChapterId.value && !contentDirty.value) {
     return
   }
@@ -5267,6 +5356,67 @@ function roleType(value?: string) {
 
 .w-full {
   width: 100%;
+}
+
+/* 流式生成状态条：跟着编辑区走，停下来也不遮正文 */
+.stream-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 6px;
+  background: var(--el-color-primary-light-9);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.stream-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--sf-brand);
+  animation: stream-pulse 1s ease-in-out infinite;
+}
+
+@keyframes stream-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.72);
+  }
+}
+
+.stream-label {
+  font-weight: 600;
+  color: var(--sf-brand);
+}
+
+.stream-meta {
+  color: var(--sf-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stream-spacer {
+  flex: 1;
+}
+
+.ai-generating-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--el-color-primary-light-9);
+  color: var(--sf-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 @media (max-width: 1100px) {

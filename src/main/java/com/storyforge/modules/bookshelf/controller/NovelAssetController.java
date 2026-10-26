@@ -32,9 +32,11 @@ import com.storyforge.modules.bookshelf.service.AiEventService;
 import com.storyforge.modules.bookshelf.service.AiItemService;
 import com.storyforge.modules.bookshelf.service.AiOutlineService;
 import com.storyforge.modules.bookshelf.service.ChapterVersionService;
+import com.storyforge.modules.bookshelf.service.ContentStreamService;
 import com.storyforge.modules.bookshelf.service.NovelAssetService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -46,6 +48,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
@@ -65,6 +68,7 @@ public class NovelAssetController {
     private final AiContentService aiContentService;
     private final AiItemService aiItemService;
     private final ChapterVersionService chapterVersionService;
+    private final ContentStreamService contentStreamService;
 
     /* ---------------- 章节 ---------------- */
 
@@ -118,6 +122,30 @@ public class NovelAssetController {
     public R<Void> deleteChapter(@PathVariable Long id) {
         assetService.deleteChapter(id);
         return R.ok();
+    }
+
+    /**
+     * 流式写正文。
+     *
+     * <p>返回 {@code text/event-stream}：{@code meta} → 多个 {@code delta} → {@code done}（或 {@code error}）。
+     * 业务异常发生在「建流之前」（本章已有生成在跑、线程池满）时仍按普通 JSON 返回，
+     * 因此前端要先看响应头再决定按 SSE 读还是按 JSON 解析。</p>
+     *
+     * <p>这里刻意<b>不写</b> {@code produces = text/event-stream}：一旦写了，之后任何同步错误
+     * （参数校验、404、建流失败）在内容协商时都会要求以 {@code text/event-stream} 输出 JSON，
+     * 结果全部变成 500「No acceptable representation」。响应头由 {@link SseEmitter} 自己带上。</p>
+     */
+    @Operation(summary = "AI 写本章正文（流式）",
+            description = "SSE 逐字推送；事件为 meta / delta / done / error。旧的非流式接口仍然保留")
+    @PostMapping("/chapters/{id}/generate/stream")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 10, windowSeconds = 60)
+    public SseEmitter generateContentStream(@PathVariable Long id,
+                                           @Valid @RequestBody ContentGenerateRequest request,
+                                           HttpServletResponse response) {
+        // nginx 侧已配 proxy_buffering off；这里再声明一次，兼容没改过配置的部署
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        return contentStreamService.start(id, request);
     }
 
     /* ---------------- 章节正文历史版本 ---------------- */

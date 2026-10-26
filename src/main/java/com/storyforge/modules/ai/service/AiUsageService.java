@@ -4,8 +4,10 @@ import com.storyforge.common.context.UserContextHolder;
 import com.storyforge.infra.ai.AiEndpoint;
 import com.storyforge.infra.ai.ChatMessage;
 import com.storyforge.infra.ai.ChatResult;
+import com.storyforge.infra.ai.ChatStreamResult;
 import com.storyforge.infra.ai.ImageEndpoint;
 import com.storyforge.infra.ai.OpenAiClient;
+import com.storyforge.infra.ai.StreamAbortedException;
 import com.storyforge.modules.ai.entity.AiUsageEntity;
 import com.storyforge.modules.ai.scene.AiScene;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +15,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * 带用量统计的 AI 对话入口。
@@ -94,6 +98,75 @@ public class AiUsageService {
                 || message.contains("未配置默认模型")
                 || message.contains("消息内容为空")
                 || message.contains("请求被中断"));
+    }
+
+    /**
+     * 发起一次流式对话，并把用量写入流水。
+     *
+     * <p>重试规则与同步版不同：<b>只在吐出第一个增量之前允许重试</b>。一旦前端已经看到
+     * 文字，重试就会把开头的段落再吐一遍，作者会看到重复内容——这种「成功但文本错乱」
+     * 比直接报错更难处理，所以首字之后一律不再重试。</p>
+     *
+     * <p>客户端主动中止（{@link StreamAbortedException}）落一条失败流水后原样抛出：
+     * 这次生成确实没完成，不该被算进成功率里。</p>
+     */
+    public ChatStreamResult chatStream(AiScene scene, AiEndpoint endpoint, List<ChatMessage> messages,
+                                       Consumer<String> onDelta) {
+        String model = endpoint == null ? null : endpoint.model();
+        int messageCount = messages == null ? 0 : messages.size();
+        int messageChars = 0;
+        if (messages != null) {
+            for (ChatMessage message : messages) {
+                messageChars += message.content() == null ? 0 : message.content().length();
+            }
+        }
+        log.info("[ai] 流式请求开始 scene={} model={} baseUrl={} messages={} chars={} temperature={} maxTokens={}",
+                scene, model, endpoint == null ? null : endpoint.baseUrl(), messageCount, messageChars,
+                endpoint == null ? null : endpoint.temperature(), endpoint == null ? null : endpoint.maxTokens());
+
+        AtomicBoolean emitted = new AtomicBoolean(false);
+        Consumer<String> guarded = text -> {
+            emitted.set(true);
+            onDelta.accept(text);
+        };
+
+        long startedAt = System.currentTimeMillis();
+        RuntimeException failure = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                ChatStreamResult result = openAiClient.chatStream(endpoint, messages, guarded);
+                save(scene, endpoint, result.model(), result.promptTokens(), result.completionTokens(),
+                        (int) Math.min(result.latencyMs(), Integer.MAX_VALUE), null);
+                log.info("[ai] 流式请求完成 scene={} model={} latency={}ms 首字={}ms 增量={} 字={} tokens=({},{}) 第{}次",
+                        scene, result.model(), result.latencyMs(), result.firstTokenMs(), result.deltaCount(),
+                        result.content() == null ? 0 : result.content().length(),
+                        result.promptTokens(), result.completionTokens(), attempt);
+                return result;
+            } catch (StreamAbortedException aborted) {
+                int latency = (int) Math.min(System.currentTimeMillis() - startedAt, Integer.MAX_VALUE);
+                save(scene, endpoint, model, 0, 0, latency, "客户端已停止生成");
+                log.info("[ai] 流式请求被客户端中止 scene={} model={} 已用={}ms 首字前={}",
+                        scene, model, latency, !emitted.get());
+                throw aborted;
+            } catch (RuntimeException ex) {
+                failure = ex;
+                String reason = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                save(scene, endpoint, model, 0, 0,
+                        (int) Math.min(System.currentTimeMillis() - startedAt, Integer.MAX_VALUE), reason);
+                if (emitted.get()) {
+                    log.error("[ai] 流式中途失败，已输出部分内容，不再重试 scene={} model={} 原因={}", scene, model, reason);
+                    throw ex;
+                }
+                if (!isRetryable(reason) || attempt >= MAX_ATTEMPTS) {
+                    log.error("[ai] 流式调用失败 scene={} model={} 原因={} 已尝试{}次", scene, model, reason, attempt);
+                    throw ex;
+                }
+                log.warn("[ai] 流式调用失败，自动重试 scene={} model={} 第{}次失败 原因={} 剩余重试{}次",
+                        scene, model, attempt, reason, MAX_ATTEMPTS - attempt);
+                sleepQuietly(attempt * 1000L);
+            }
+        }
+        throw failure;
     }
 
     private void sleepQuietly(long millis) {

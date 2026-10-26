@@ -13,12 +13,16 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * OpenAI 协议客户端（仅文本模型）。
@@ -149,8 +153,200 @@ public class OpenAiClient {
         }
     }
 
+    /**
+     * 多轮对话（流式）。
+     *
+     * <p>请求体带 {@code stream: true}，用 {@code BodyHandlers.ofLines()} 逐行读 SSE：
+     * 每解析出一个增量就交给 {@code onDelta}，同时累加进返回结果。协议脏数据（空行、
+     * {@code event:} 行、注释行、解析失败的 JSON）一律跳过，绝不因此中断整条流——
+     * 上游网关什么都可能吐出来，为此丢掉整章正文不值得。</p>
+     *
+     * <p>兼容两种情况：上游忽略 {@code stream} 直接回一个完整 JSON（拿不到增量），
+     * 以及上游把整段放在 {@code choices[0].message.content} 里。前者返回
+     * {@code deltaCount = 0}，上层据此降级成同步请求。</p>
+     *
+     * <p>{@code onDelta} 抛 {@link StreamAbortedException} 表示客户端不要了：立即关闭上游连接。</p>
+     */
+    public ChatStreamResult chatStream(AiEndpoint endpoint, List<ChatMessage> messages, Consumer<String> onDelta) {
+        if (endpoint.apiKey() == null || endpoint.apiKey().isBlank()) {
+            throw new IllegalStateException("未配置 API Key");
+        }
+        if (endpoint.model() == null || endpoint.model().isBlank()) {
+            throw new IllegalStateException("未配置默认模型");
+        }
+        if (messages == null || messages.isEmpty()) {
+            throw new IllegalStateException("消息内容为空");
+        }
+
+        long startedAt = System.currentTimeMillis();
+        try {
+            HttpResponse<Stream<String>> response = openStream(endpoint, messages, true);
+            if (response.statusCode() / 100 != 2) {
+                String errorBody = joinLines(response.body());
+                if (isSamplingUnsupported(errorBody)) {
+                    log.info("[ai] endpoint rejected sampling params on stream, retry without them model={}",
+                            endpoint.model());
+                    response = openStream(endpoint, messages, false);
+                    if (response.statusCode() / 100 != 2) {
+                        throw new IllegalStateException(describeHttpError(
+                                response.statusCode(), joinLines(response.body())));
+                    }
+                } else {
+                    throw new IllegalStateException(describeHttpError(response.statusCode(), errorBody));
+                }
+            }
+            return readStream(endpoint, response, onDelta, startedAt);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("请求被中断", ex);
+        } catch (StreamAbortedException | IllegalStateException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            long latency = System.currentTimeMillis() - startedAt;
+            log.warn("[ai] chat stream failed baseUrl={} model={} latency={}ms error={}",
+                    endpoint.baseUrl(), endpoint.model(), latency, ex.toString());
+            throw new IllegalStateException(describeException(ex), ex);
+        }
+    }
+
+    private HttpResponse<Stream<String>> openStream(AiEndpoint endpoint,
+                                                                    List<ChatMessage> messages,
+                                                                    boolean withSampling) throws Exception {
+        HttpRequest request = baseRequest(endpoint, "/chat/completions", chatBody(endpoint, messages, withSampling, true))
+                // baseRequest 已写了 Accept: application/json，这里必须替换而不是追加
+                .setHeader("Accept", "text/event-stream")
+                .timeout(Duration.ofMillis(normalizeTimeout(endpoint.timeoutMs())))
+                .build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofLines());
+    }
+
+    /** 逐行解析 SSE 帧并累加正文；返回时上游连接已关闭。 */
+    private ChatStreamResult readStream(AiEndpoint endpoint,
+                                        HttpResponse<Stream<String>> response,
+                                        Consumer<String> onDelta,
+                                        long startedAt) {
+        StringBuilder content = new StringBuilder();
+        String model = endpoint.model();
+        Integer promptTokens = null;
+        Integer completionTokens = null;
+        long firstTokenMs = -1L;
+        int deltaCount = 0;
+
+        try (Stream<String> lines = response.body()) {
+            Iterator<String> iterator = lines.iterator();
+            while (iterator.hasNext()) {
+                String line = iterator.next();
+                if (line == null || line.isEmpty()) {
+                    continue;
+                }
+                // 注释行（: ping）、事件名、帧 id、重连间隔：与正文无关
+                if (line.charAt(0) == ':') {
+                    continue;
+                }
+                if (line.startsWith("event:") || line.startsWith("id:") || line.startsWith("retry:")) {
+                    continue;
+                }
+
+                JsonNode root;
+                if (line.startsWith("data:")) {
+                    String payload = line.substring(5).trim();
+                    if (payload.isEmpty()) {
+                        continue;
+                    }
+                    if ("[DONE]".equals(payload)) {
+                        break;
+                    }
+                    root = parseQuietly(payload);
+                } else if (line.charAt(0) == '{') {
+                    // 上游忽略了 stream=true，直接回了完整 JSON
+                    root = parseQuietly(line);
+                } else {
+                    continue;
+                }
+                if (root == null) {
+                    continue;
+                }
+
+                if (root.hasNonNull("model")) {
+                    model = root.get("model").asText(model);
+                }
+                JsonNode usage = root.path("usage");
+                if (usage.isObject()) {
+                    if (usage.hasNonNull("prompt_tokens")) {
+                        promptTokens = usage.get("prompt_tokens").asInt();
+                    }
+                    if (usage.hasNonNull("completion_tokens")) {
+                        completionTokens = usage.get("completion_tokens").asInt();
+                    }
+                }
+
+                String text = deltaText(root);
+                if (text == null || text.isEmpty()) {
+                    continue;
+                }
+                if (firstTokenMs < 0) {
+                    firstTokenMs = System.currentTimeMillis() - startedAt;
+                }
+                content.append(text);
+                deltaCount++;
+                onDelta.accept(text);
+            }
+        }
+        return new ChatStreamResult(content.toString(), model, firstTokenMs,
+                System.currentTimeMillis() - startedAt, promptTokens, completionTokens, deltaCount);
+    }
+
+    /** 增量可能在 {@code delta.content}，也可能整段躺在 {@code message.content}（非流式回包）。 */
+    private String deltaText(JsonNode root) {
+        JsonNode choice = root.path("choices").path(0);
+        JsonNode delta = choice.path("delta").path("content");
+        if (delta.isTextual()) {
+            return delta.asText();
+        }
+        if (delta.isArray()) {
+            StringBuilder builder = new StringBuilder();
+            for (JsonNode part : delta) {
+                String text = part.path("text").asText("");
+                if (!text.isEmpty()) {
+                    builder.append(text);
+                }
+            }
+            if (builder.length() > 0) {
+                return builder.toString();
+            }
+        }
+        JsonNode message = choice.path("message").path("content");
+        return message.isTextual() ? message.asText() : null;
+    }
+
+    private JsonNode parseQuietly(String payload) {
+        try {
+            return objectMapper.readTree(payload);
+        } catch (Exception ex) {
+            log.debug("[ai] skip unparsable stream chunk: {}", truncate(payload));
+            return null;
+        }
+    }
+
+    /** 错误响应体（非 SSE）按行读回，截断后用于拼错误信息。 */
+    private String joinLines(Stream<String> lines) {
+        try (Stream<String> stream = lines) {
+            return stream.limit(40).collect(Collectors.joining("\n"));
+        }
+    }
+
     private HttpResponse<String> sendChat(AiEndpoint endpoint, List<ChatMessage> messages, boolean withSampling)
             throws Exception {
+        HttpRequest request = baseRequest(endpoint, "/chat/completions", chatBody(endpoint, messages, withSampling, false))
+                .timeout(Duration.ofMillis(normalizeTimeout(endpoint.timeoutMs())))
+                .build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    private Map<String, Object> chatBody(AiEndpoint endpoint,
+                                         List<ChatMessage> messages,
+                                         boolean withSampling,
+                                         boolean stream) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", endpoint.model());
         List<Map<String, String>> payload = new ArrayList<>(messages.size());
@@ -158,7 +354,12 @@ public class OpenAiClient {
             payload.add(Map.of("role", message.role(), "content", message.content()));
         }
         body.put("messages", payload);
-        body.put("stream", false);
+        body.put("stream", stream);
+        if (stream) {
+            // OpenAI 兼容协议里它只是「顺便把 usage 带回来」；个别网关不认这个字段，
+            // 认不认都不影响正文，所以失败也不当错误处理（不重试、不改请求）。
+            body.put("stream_options", Map.of("include_usage", true));
+        }
         if (withSampling) {
             if (endpoint.temperature() != null && endpoint.temperature() > 0D) {
                 body.put("temperature", endpoint.temperature());
@@ -167,11 +368,7 @@ public class OpenAiClient {
                 body.put("max_tokens", endpoint.maxTokens());
             }
         }
-
-        HttpRequest request = baseRequest(endpoint, "/chat/completions", body)
-                .timeout(Duration.ofMillis(normalizeTimeout(endpoint.timeoutMs())))
-                .build();
-        return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        return body;
     }
 
     /** 判断错误是否由采样参数不被支持引起。 */

@@ -7,6 +7,7 @@ import com.storyforge.common.util.WordCounts;
 import com.storyforge.infra.ai.AiEndpoint;
 import com.storyforge.infra.ai.ChatMessage;
 import com.storyforge.infra.ai.ChatResult;
+import com.storyforge.infra.ai.ChatStreamResult;
 import com.storyforge.infra.ai.PromptKit;
 import com.storyforge.modules.ai.scene.AiScene;
 import com.storyforge.modules.ai.service.AiSceneEndpointResolver;
@@ -121,12 +122,77 @@ public class AiContentService {
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     /**
+     * 流式回调：检索完成时给一次元信息，之后每个增量给一次文本。
+     *
+     * <p>实现方（SSE 端点）抛 {@link com.storyforge.infra.ai.StreamAbortedException} 即表示
+     * 客户端已经断开，本服务会立刻停止读取上游并放弃落库。</p>
+     */
+    public interface StreamListener {
+
+        /** 上下文组装完成、正文还没开始写。 */
+        void onMeta(StreamMeta meta);
+
+        /** 一个增量（可能含换行，前端累加即可，不要按行渲染）。 */
+        void onDelta(String text);
+    }
+
+    /**
+     * 流式生成开始前的元信息。
+     *
+     * @param model       本次使用的模型
+     * @param targetWords 目标汉字数，供前端显示「已生成 / 目标」
+     * @param mode        REPLACE 或 APPEND
+     * @param search      本次联网检索情况
+     */
+    public record StreamMeta(String model, int targetWords, String mode, SearchBundleVO search) {
+    }
+
+    /**
      * 生成本章正文。
      *
      * <p>不加事务：正文写入与后面的「档案补建」是两步独立的事——补建失败只记 warning，
      * 不能让作者辛苦等来的一章因为一个档案字段不合法而一起回滚。</p>
      */
     public ContentGenerateResultVO generate(Long chapterId, ContentGenerateRequest request) {
+        GenContext ctx = prepare(chapterId, request, null);
+        ChatResult reply = chat(ctx.endpoint(), ctx.systemPrompt(), ctx.userPrompt());
+        return persist(ctx, reply.content(), reply.model());
+    }
+
+    /**
+     * 流式生成本章正文：每收到一个增量就交给 {@code listener}，正文落库与档案补建与同步版完全一致。
+     *
+     * <p>降级：上游明明要了流式却一个增量都没给（部分网关直接忽略 {@code stream}），
+     * 就改用同步 {@link #chat} 重发一次，把整段作为单个增量推给前端——作者少个打字机效果，
+     * 但能拿到正文，比直接报错好。</p>
+     *
+     * <p>{@code listener} 抛 {@link com.storyforge.infra.ai.StreamAbortedException} 表示客户端不要了：
+     * 异常一路往上抛，<b>正文不落库</b>，已收到的文本留在前端当草稿。</p>
+     */
+    public ContentGenerateResultVO generateStreaming(Long chapterId,
+                                                     ContentGenerateRequest request,
+                                                     StreamListener listener) {
+        GenContext ctx = prepare(chapterId, request, listener);
+        ChatStreamResult streamed = aiUsageService.chatStream(AiScene.BODY_GEN, ctx.endpoint(),
+                List.of(ChatMessage.system(ctx.systemPrompt()), ChatMessage.user(ctx.userPrompt())),
+                listener::onDelta);
+        if (!streamed.empty()) {
+            return persist(ctx, streamed.content(), streamed.model());
+        }
+
+        log.info("[ai-content] 上游未返回流式增量，降级为同步请求 chapterId={} model={}",
+                chapterId, ctx.endpoint().model());
+        ChatResult reply = chat(ctx.endpoint(), ctx.systemPrompt(), ctx.userPrompt());
+        listener.onDelta(reply.content());
+        return persist(ctx, reply.content(), reply.model());
+    }
+
+    /**
+     * 组装提示词：取数 → 决定联网检索 → 拼 system / user 消息。
+     *
+     * <p>流式与非流式共用这一步，保证两条路径读到的上下文与提示词一字不差。</p>
+     */
+    private GenContext prepare(Long chapterId, ContentGenerateRequest request, StreamListener listener) {
         ChapterVO chapter = assetService.getChapter(chapterId);
         NovelDetailVO detail = bookshelfService.detail(chapter.novelId());
         List<ChapterVO> chapters = assetService.listChapters(chapter.novelId());
@@ -152,7 +218,7 @@ public class AiContentService {
 
         long startedAt = System.currentTimeMillis();
         SearchBundleVO search = search(chapter, detail, requirement, request, endpoint);
-        Map<String, String> promptVars = new java.util.LinkedHashMap<>();
+        Map<String, String> promptVars = new LinkedHashMap<>();
         promptVars.put("novelTitle", detail.getNovel() == null ? "这本书" : detail.getNovel().getTitle());
         promptVars.put("genre", detail.getNovel() == null || detail.getNovel().getGenre() == null
                 ? "通用" : detail.getNovel().getGenre());
@@ -165,47 +231,75 @@ public class AiContentService {
         if (!hasText(system)) {
             system = systemPrompt(detail.getNovel());
         }
-        java.util.Set<String> used = promptTemplateService.usedVariables(AiScene.BODY_GEN);
+        Set<String> used = promptTemplateService.usedVariables(AiScene.BODY_GEN);
         String userPrompt = buildPrompt(detail, chapter, chapters, events, items, factions,
                 requirement, targetWords, search, used);
-        ChatResult reply = chat(endpoint, system, userPrompt);
-        String generated = cleanGenerated(reply.content());
+
+        String previous = chapter.content() == null ? "" : chapter.content().trim();
+        if (listener != null) {
+            // 检索已经完成、正文还没开始写：前端此刻就能显示「参考了哪些资料」「目标多少字」
+            listener.onMeta(new StreamMeta(endpoint.model(), targetWords, mode, search));
+        }
+        return new GenContext(chapterId, chapter, detail, items, factions, mode, targetWords,
+                endpoint, search, system, userPrompt, previous, startedAt);
+    }
+
+    /** 收尾：清洗文本 → 落库（先写版本快照）→ 档案补建 → 组装结果。 */
+    private ContentGenerateResultVO persist(GenContext ctx, String raw, String model) {
+        String generated = cleanGenerated(raw);
         if (!hasText(generated)) {
             throw BizException.of(ErrorCode.CONTENT_GENERATE_EMPTY);
         }
 
-        String previous = chapter.content() == null ? "" : chapter.content().trim();
-        String content = "APPEND".equals(mode) && !previous.isEmpty()
-                ? previous + "\n\n" + generated
+        String content = "APPEND".equals(ctx.mode()) && !ctx.previous().isEmpty()
+                ? ctx.previous() + "\n\n" + generated
                 : generated;
 
         ChapterRequest save = new ChapterRequest();
         save.setContent(content);
         save.setStatus("WRITING");
-        ChapterVO saved = assetService.updateChapter(chapterId, save, ChapterVersionEntity.SOURCE_AI_BODY);
+        ChapterVO saved = assetService.updateChapter(
+                ctx.chapterId(), save, ChapterVersionEntity.SOURCE_AI_BODY);
 
         // 正文落库后再补建档案：这一章新出现的人 / 道具 / 组织，档案里有了，下一章写作与分析才接得上
-        ArchiveBootstrap archive = bootstrapArchive(chapter.novelId(), detail, generated, endpoint, items, factions);
+        ArchiveBootstrap archive = bootstrapArchive(ctx.chapter().novelId(), ctx.detail(), generated,
+                ctx.endpoint(), ctx.items(), ctx.factions());
 
         log.info("[ai-content] generated chapterId={} mode={} words={} target={} model={} participants={} events={} "
                         + "newCharacters={} newItems={} newFactions={}",
-                chapterId, mode, WordCounts.countChinese(generated), targetWords, reply.model(),
-                chapter.participants() == null ? 0 : chapter.participants().size(),
-                chapter.events() == null ? 0 : chapter.events().size(),
+                ctx.chapterId(), ctx.mode(), WordCounts.countChinese(generated), ctx.targetWords(), model,
+                ctx.chapter().participants() == null ? 0 : ctx.chapter().participants().size(),
+                ctx.chapter().events() == null ? 0 : ctx.chapter().events().size(),
                 archive.characters().size(), archive.items().size(), archive.factions().size());
         return new ContentGenerateResultVO(
-                chapterId,
+                ctx.chapterId(),
                 content,
                 generated,
                 saved.wordCount(),
                 WordCounts.countChinese(generated),
-                mode,
-                reply.model(),
-                System.currentTimeMillis() - startedAt,
-                search,
+                ctx.mode(),
+                model,
+                System.currentTimeMillis() - ctx.startedAt(),
+                ctx.search(),
                 archive.characters(),
                 archive.items(),
                 archive.factions());
+    }
+
+    /** 一次生成要用到的全部输入，prepare 产出、persist 消费。 */
+    private record GenContext(Long chapterId,
+                              ChapterVO chapter,
+                              NovelDetailVO detail,
+                              List<ItemVO> items,
+                              List<FactionVO> factions,
+                              String mode,
+                              int targetWords,
+                              AiEndpoint endpoint,
+                              SearchBundleVO search,
+                              String systemPrompt,
+                              String userPrompt,
+                              String previous,
+                              long startedAt) {
     }
 
     /* ------------------------------------------------------------------ */
