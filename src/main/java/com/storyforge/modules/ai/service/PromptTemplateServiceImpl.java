@@ -152,6 +152,22 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         }
     }
 
+    @Override
+    public java.util.Set<String> usedVariables(AiScene scene) {
+        PromptSceneSpec spec = registry.get(scene == null ? null : scene.name());
+        if (spec == null || !spec.editable()) {
+            return java.util.Set.of();
+        }
+        try {
+            PromptTemplateEntity entity = override(spec.scene());
+            String content = entity == null ? spec.defaultContent() : entity.getContent();
+            return renderer.variablesIn(content);
+        } catch (Exception ex) {
+            log.warn("[prompt] read used variables failed scene={}: {}", spec.scene(), ex.getMessage());
+            return java.util.Set.of();
+        }
+    }
+
     /* ------------------------------------------------------------------ */
 
     private PromptSceneSpec requireScene(String scene) {

@@ -47,4 +47,8 @@ public class NovelBlueprint {
 
     @Schema(description = "配角 / 反派")
     private List<CharacterDraft> characters = new ArrayList<>();
+
+    @Schema(description = "创作约束：建书前追问的作答（「中文名：答案」逐行文本）；"
+            + "建书时一并落库，编辑时非空则整体覆盖")
+    private String constraintText;
 }

@@ -107,9 +107,10 @@ public class AiCharacterService {
                 MAX_TOKENS);
 
         long startedAt = System.currentTimeMillis();
+        java.util.Set<String> used = promptTemplateService.usedVariables(AiScene.CHARACTER_BUILD);
         String userPrompt = buildPrompt(detail, existing, listRelationsQuietly(novelId),
-                listFactionsQuietly(novelId), requirement, count);
-        String system = systemPrompt(detail, count);
+                listFactionsQuietly(novelId), requirement, count, used);
+        String system = systemPrompt(detail, count, requirement);
         ChatResult reply = chat(endpoint, system, userPrompt);
         JsonNode root;
         try {
@@ -127,13 +128,17 @@ public class AiCharacterService {
     }
 
     /** 用户改过提示词就用模板，否则用内置常量。 */
-    private String systemPrompt(NovelDetailVO detail, int count) {
+    private String systemPrompt(NovelDetailVO detail, int count, String requirement) {
         com.storyforge.modules.novel.dto.NovelVO novel = detail == null ? null : detail.getNovel();
         Map<String, String> vars = new LinkedHashMap<>();
         vars.put("novelTitle", novel == null || !hasText(novel.getTitle()) ? "这本书" : novel.getTitle());
         vars.put("genre", novel == null || !hasText(novel.getGenre()) ? "通用" : novel.getGenre());
         vars.put("count", String.valueOf(count));
-        String rendered = promptTemplateService.system(AiScene.CHARACTER_BUILD, vars);
+        vars.put("authorRequirement", requirement == null ? "" : requirement);
+        PromptVars.putNovel(vars, novel, 400);
+        PromptVars.putSettings(vars, detail, 1600, 1200, 600, 500, 300);
+        vars.put("constraints", PromptVars.constraint(detail, 1200));
+        String rendered = promptTemplateService.system(AiScene.CHARACTER_BUILD, PromptVars.clean(vars));
         return hasText(rendered) ? rendered : SYSTEM_PROMPT;
     }
 
@@ -292,14 +297,18 @@ public class AiCharacterService {
                                List<CharacterRelationVO> relations,
                                List<FactionVO> factions,
                                String requirement,
-                               int count) {
+                               int count,
+                               java.util.Set<String> used) {
         StringBuilder builder = new StringBuilder();
         appendNovelInfo(builder, detail);
-        appendBackground(builder, detail);
+        appendBackground(builder, detail, used);
         appendExistingCharacters(builder, existing);
         appendExistingRelations(builder, relations);
         appendFactions(builder, factions);
-        builder.append("\n【作者要求】\n").append(requirement).append("\n");
+        PromptVars.appendConstraint(builder, detail, used, 1200);
+        if (PromptVars.emit(used, "authorRequirement")) {
+            builder.append("\n【作者要求】\n").append(requirement).append("\n");
+        }
         builder.append("\n【本次任务】\n生成 ").append(count).append(" 个新角色，并给出这些角色之间、以及它们与已有角色之间的关系。\n");
 
         builder.append("""
@@ -377,13 +386,27 @@ public class AiCharacterService {
     }
 
     /** 四类设定原样带入：角色必须活在这套规则里，否则新角色一出现就打自己的脸。 */
-    private void appendBackground(StringBuilder builder, NovelDetailVO detail) {
+    private void appendBackground(StringBuilder builder, NovelDetailVO detail, java.util.Set<String> used) {
+        boolean anySetting = PromptVars.emit(used, "worldview") || PromptVars.emit(used, "background")
+                || PromptVars.emit(used, "coreConflict") || PromptVars.emit(used, "highlights");
+        if (!anySetting) {
+            // 四类设定都已经被模板引用，user 段不再重复
+            return;
+        }
         StringBuilder block = new StringBuilder();
         if (detail != null) {
-            appendSetting(block, detail, "WORLDVIEW", "世界观", 1600);
-            appendSetting(block, detail, "BACKGROUND", "背景", 1200);
-            appendSetting(block, detail, "CORE_CONFLICT", "核心冲突", 600);
-            appendSetting(block, detail, "HIGHLIGHT", "核心看点", 500);
+            if (PromptVars.emit(used, "worldview")) {
+                appendSetting(block, detail, "WORLDVIEW", "世界观", 1600);
+            }
+            if (PromptVars.emit(used, "background")) {
+                appendSetting(block, detail, "BACKGROUND", "背景", 1200);
+            }
+            if (PromptVars.emit(used, "coreConflict")) {
+                appendSetting(block, detail, "CORE_CONFLICT", "核心冲突", 600);
+            }
+            if (PromptVars.emit(used, "highlights")) {
+                appendSetting(block, detail, "HIGHLIGHT", "核心看点", 500);
+            }
         }
         if (block.isEmpty()) {
             builder.append("\n【世界观与背景】\n（本书尚未填写设定，请让角色与题材自洽，不要引入需要额外解释的世界规则）\n");

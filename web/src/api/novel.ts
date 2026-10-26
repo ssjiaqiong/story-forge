@@ -8,6 +8,8 @@ export interface NovelVO {
   genre?: string
   tags: string[]
   intro?: string
+  /** 创作约束：注入此后所有 AI 生成的硬要求 */
+  constraintText?: string
   status: string
   source: string
   inspirationSessionId?: string

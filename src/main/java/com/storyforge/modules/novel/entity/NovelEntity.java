@@ -58,6 +58,9 @@ public class NovelEntity implements Serializable {
 
     private Integer wordCount;
 
+    /** 创作约束：建书时 AI 追问后作者补充的信息，注入后续所有创作场景 */
+    private String constraintText;
+
     @TableLogic
     private Integer deleted;
 

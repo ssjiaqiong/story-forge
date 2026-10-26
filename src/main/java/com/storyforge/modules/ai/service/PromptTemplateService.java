@@ -27,4 +27,14 @@ public interface PromptTemplateService {
      * <p>任何异常都回退到内置默认模板，保证生成流程不中断。</p>
      */
     String system(AiScene scene, Map<String, String> vars);
+
+    /**
+     * 当前生效模板里实际引用的变量名。
+     *
+     * <p>调用方据此把「已经写进 system 的上下文块」从 user 消息里剔除，
+     * 避免同一份设定注入两次、白占 token。</p>
+     *
+     * <p>默认模板不引用上下文变量，因此返回空集合，行为与改造前完全一致。</p>
+     */
+    java.util.Set<String> usedVariables(AiScene scene);
 }

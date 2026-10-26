@@ -104,8 +104,10 @@ public class AiEventService {
 
         long startedAt = System.currentTimeMillis();
         SearchBundleVO search = search(novelId, requirement, request, endpoint, existingEvents, characters);
-        String userPrompt = buildPrompt(existingEvents, characters, requirement, count, search);
-        String system = systemPrompt(novelId, count);
+        java.util.Set<String> used = promptTemplateService.usedVariables(AiScene.EVENT_SUPPLY);
+        NovelVO novel = loadNovel(novelId);
+        String userPrompt = buildPrompt(existingEvents, characters, requirement, count, search, used, novel);
+        String system = systemPrompt(novel, count, requirement);
         ChatResult reply = chat(endpoint, system, userPrompt);
         JsonNode root;
         try {
@@ -124,20 +126,29 @@ public class AiEventService {
     }
 
     /** 用户改过提示词就用模板，否则用内置常量。 */
-    private String systemPrompt(Long novelId, int count) {
-        NovelVO novel = null;
-        try {
-            novel = novelId == null ? null : novelService.detail(novelId);
-        } catch (RuntimeException ex) {
-            // 书名题材只影响提示词文案，取不到就用兜底值，不能让事件生成失败
-            log.warn("[ai-event] load novel failed novelId={}: {}", novelId, ex.getMessage());
-        }
+    private String systemPrompt(NovelVO novel, int count, String requirement) {
         Map<String, String> vars = new java.util.LinkedHashMap<>();
         vars.put("novelTitle", novel == null || !hasText(novel.getTitle()) ? "这本书" : novel.getTitle());
         vars.put("genre", novel == null || !hasText(novel.getGenre()) ? "通用" : novel.getGenre());
         vars.put("count", String.valueOf(count));
-        String rendered = promptTemplateService.system(AiScene.EVENT_SUPPLY, vars);
+        vars.put("authorRequirement", requirement == null ? "" : requirement);
+        PromptVars.putNovel(vars, novel, 400);
+        vars.put("constraints", PromptVars.constraint(novel, 1200));
+        String rendered = promptTemplateService.system(AiScene.EVENT_SUPPLY, PromptVars.clean(vars));
         return hasText(rendered) ? rendered : SYSTEM_PROMPT;
+    }
+
+    /** 书名题材与创作约束只影响提示词文案，取不到就用兜底值，不能让事件生成失败。 */
+    private NovelVO loadNovel(Long novelId) {
+        if (novelId == null) {
+            return null;
+        }
+        try {
+            return novelService.detail(novelId);
+        } catch (RuntimeException ex) {
+            log.warn("[ai-event] load novel failed novelId={}: {}", novelId, ex.getMessage());
+            return null;
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -269,7 +280,9 @@ public class AiEventService {
                                List<CharacterVO> characters,
                                String requirement,
                                int count,
-                               SearchBundleVO search) {
+                               SearchBundleVO search,
+                               java.util.Set<String> used,
+                               NovelVO novel) {
         StringBuilder builder = new StringBuilder();
         builder.append("【已有事件】\n");
         if (existingEvents.isEmpty()) {
@@ -314,7 +327,10 @@ public class AiEventService {
             builder.append(searchBlock);
         }
 
-        builder.append("\n【作者要求】\n").append(requirement).append("\n");
+        PromptVars.appendConstraint(builder, novel, used, 1200);
+        if (PromptVars.emit(used, "authorRequirement")) {
+            builder.append("\n【作者要求】\n").append(requirement).append("\n");
+        }
         builder.append("\n【本次任务】\n生成 ").append(count).append(" 个新事件，不要与已有事件重复。\n");
 
         builder.append("""

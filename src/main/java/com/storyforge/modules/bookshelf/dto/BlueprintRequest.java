@@ -44,4 +44,10 @@ public class BlueprintRequest {
     @Schema(description = "主角偏好，如 想写一个女性主角", example = "主角是女性，偏冷静克制")
     @Size(max = 500, message = "主角偏好最长 500 个字符")
     private String protagonistHint;
+
+    @Schema(description = "创作约束：建书前追问的作答，由 POST /api/bookshelf/blueprint/constraints 组装；"
+            + "随蓝图落库到小说上，此后所有创作场景都会读到",
+            example = "主角设定：被逐出宗门的杂役\n主角目标：找回失传的残卷")
+    @Size(max = 2000, message = "创作约束最长 2000 个字符")
+    private String constraintText;
 }

@@ -96,6 +96,16 @@
           <el-form-item label="文风基调">
             <el-input v-model="settings.STYLE" maxlength="200" />
           </el-form-item>
+          <el-form-item label="创作约束">
+            <el-input
+              v-model="constraintText"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 6 }"
+              maxlength="2000"
+              show-word-limit
+              placeholder="每行一条，如：主角设定：被逐出宗门的杂役。会作为硬要求注入此后所有 AI 生成（总纲、大纲、正文、人物）"
+            />
+          </el-form-item>
         </el-form>
       </div>
 
@@ -2181,6 +2191,8 @@ const settings = reactive<Record<string, string>>({
 
 const basicSaving = ref(false)
 const settingSaving = ref(false)
+/** 创作约束：建书时追问出来的硬要求，随设定一起保存 */
+const constraintText = ref('')
 
 /* ---------- 总纲 ---------- */
 const masterOutlines = ref<MasterOutlineVO[]>([])
@@ -3302,6 +3314,7 @@ async function loadAll() {
     basic.tags = detail.novel.tags || []
     basic.intro = detail.novel.intro || ''
     basic.status = detail.novel.status || 'DRAFT'
+    constraintText.value = detail.novel.constraintText || ''
     for (const key of Object.keys(settings)) {
       settings[key] = ''
     }
@@ -3376,7 +3389,8 @@ async function saveSettings() {
       highlights: splitLines(settings.HIGHLIGHT),
       style: settings.STYLE,
       protagonist: characters.value.find((item) => item.rolePos === 'PROTAGONIST'),
-      characters: characters.value.filter((item) => item.rolePos !== 'PROTAGONIST')
+      characters: characters.value.filter((item) => item.rolePos !== 'PROTAGONIST'),
+      constraintText: constraintText.value
     })
     const updated = await updateNovel(novelId.value, { blueprint })
     novel.value = updated

@@ -3,13 +3,17 @@ package com.storyforge.modules.bookshelf.controller;
 import com.storyforge.common.api.R;
 import com.storyforge.common.context.UserContextHolder;
 import com.storyforge.common.ratelimit.RateLimit;
+import com.storyforge.modules.bookshelf.dto.BlueprintQuestionsVO;
 import com.storyforge.modules.bookshelf.dto.BlueprintRequest;
 import com.storyforge.modules.bookshelf.dto.BlueprintResultVO;
 import com.storyforge.modules.bookshelf.dto.BlueprintTaskVO;
+import com.storyforge.modules.bookshelf.dto.ConstraintFormRequest;
+import com.storyforge.modules.bookshelf.dto.ConstraintTextVO;
 import com.storyforge.modules.bookshelf.dto.NovelCreateRequest;
 import com.storyforge.modules.bookshelf.dto.NovelDetailVO;
 import com.storyforge.modules.bookshelf.dto.NovelEditRequest;
 import com.storyforge.modules.bookshelf.dto.NovelExportPackage;
+import com.storyforge.modules.bookshelf.service.BlueprintQuestionService;
 import com.storyforge.modules.bookshelf.service.BlueprintTaskService;
 import com.storyforge.modules.bookshelf.service.BookshelfService;
 import com.storyforge.modules.bookshelf.service.NovelTransferService;
@@ -47,8 +51,28 @@ public class BookshelfController {
 
     private final BookshelfService bookshelfService;
     private final BlueprintTaskService blueprintTaskService;
+    private final BlueprintQuestionService blueprintQuestionService;
     private final NovelTransferService novelTransferService;
     private final ObjectMapper objectMapper;
+
+    @Operation(summary = "建书前的信息追问",
+            description = "让 AI 判断这个创意还缺哪些关键信息（最多 4 个，字段受固定白名单约束）；"
+                    + "创意已经写清时可能返回空列表，前端照常进入下一步")
+    @PostMapping("/blueprint/questions")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 10, windowSeconds = 60)
+    public R<BlueprintQuestionsVO> blueprintQuestions(@Valid @RequestBody BlueprintRequest request) {
+        return R.ok(blueprintQuestionService.questions(request));
+    }
+
+    @Operation(summary = "组装创作约束",
+            description = "把追问的作答拼成「中文名：答案」的多行文本，随蓝图生成请求一起提交并落库")
+    @PostMapping("/blueprint/constraints")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 60, windowSeconds = 60)
+    public R<ConstraintTextVO> assembleConstraints(@RequestBody ConstraintFormRequest request) {
+        ConstraintTextVO vo = new ConstraintTextVO();
+        vo.setConstraintText(blueprintQuestionService.assemble(request));
+        return R.ok(vo);
+    }
 
     @Operation(summary = "创建蓝图生成任务",
             description = "分段生成世界观 / 背景 / 核心冲突 / 人物，每段超时 5 分钟；返回 taskId 供轮询进度")

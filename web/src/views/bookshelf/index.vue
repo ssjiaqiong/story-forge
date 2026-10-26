@@ -104,16 +104,29 @@
       <template #header>
         <div class="dialog-head">
           <span class="dialog-title">创建小说</span>
-          <span class="dialog-hint">{{ step === 0 ? '告诉我你想写什么，剩下的交给 AI' : '核对并修改 AI 的设定，保存后即可开写' }}</span>
+          <span class="dialog-hint">{{
+            asking
+              ? 'AI 还想知道几件事，答完生成会更贴合你的想法'
+              : step === 0
+                ? '告诉我你想写什么，剩下的交给 AI'
+                : '核对并修改 AI 的设定，保存后即可开写'
+          }}</span>
         </div>
       </template>
 
-      <el-steps :active="generating ? 1 : step + 1" simple class="create-steps">
+      <el-steps :active="stepActive" simple class="create-steps">
         <el-step title="填写创意" />
+        <el-step title="补充关键信息" />
         <el-step title="核对设定" />
       </el-steps>
 
-      <div v-if="generating" class="gen-state">
+      <div v-if="askingLoading" class="gen-state">
+        <el-icon class="spin"><Loading /></el-icon>
+        <p class="gen-title">正在判断还缺哪些信息…</p>
+        <p class="gen-desc">大概十几秒，想跳过可以直接点「跳过，直接生成」</p>
+      </div>
+
+      <div v-else-if="generating" class="gen-state">
         <el-icon class="spin"><Loading /></el-icon>
         <p class="gen-title">{{ taskLabel || 'AI 正在搭建这个世界' }}</p>
         <p class="gen-percent">{{ taskPercent }}%</p>
@@ -146,7 +159,26 @@
       </div>
 
       <div v-else class="dialog-body">
-        <div v-if="step === 0" class="idea-form">
+        <div v-if="asking" class="ask-form">
+          <p class="ask-intro">
+            AI 读了你的创意，还想确认几件事。答一句就够；留空的项由 AI 自行决定，不影响生成。
+          </p>
+          <div v-for="item in questions" :key="item.key" class="ask-item">
+            <div class="field-label">
+              <span class="ask-tag">{{ item.label }}</span>{{ item.question }}
+            </div>
+            <el-input
+              v-model="answers[item.key]"
+              type="textarea"
+              :rows="2"
+              maxlength="300"
+              show-word-limit
+              :placeholder="item.hint || '一句话说明即可'"
+            />
+          </div>
+        </div>
+
+        <div v-else-if="step === 0" class="idea-form">
           <div class="field-label">核心创意 <span class="required">*</span></div>
           <el-input
             v-model="form.idea"
@@ -225,14 +257,33 @@
       <template #footer>
         <div class="dialog-footer">
           <div class="footer-left">
-            <el-button v-if="step === 0 && !generating" text :disabled="saving" @click="createWithoutAi">
+            <el-button
+              v-if="asking"
+              text
+              :disabled="askingLoading"
+              @click="onSkipAnswers"
+            >
+              跳过，直接生成
+            </el-button>
+            <el-button
+              v-else-if="step === 0 && !generating"
+              text
+              :disabled="saving || askingLoading"
+              @click="createWithoutAi"
+            >
               不生成设定，只建草稿
             </el-button>
           </div>
           <div class="footer-right">
-            <el-button :disabled="generating" @click="closeCreate">取消</el-button>
-            <template v-if="step === 0">
-              <el-button type="primary" :loading="generating" @click="onGenerate">AI 生成设定</el-button>
+            <el-button :disabled="generating || askingLoading" @click="closeCreate">取消</el-button>
+            <template v-if="asking">
+              <el-button :disabled="saving" @click="asking = false; step = 0">上一步</el-button>
+              <el-button type="primary" :loading="generating" @click="onConfirmAnswers">开始生成</el-button>
+            </template>
+            <template v-else-if="step === 0">
+              <el-button type="primary" :loading="generating || askingLoading" @click="onGenerate">
+                {{ askingLoading ? '正在判断…' : 'AI 生成设定' }}
+              </el-button>
             </template>
             <template v-else>
               <el-button :disabled="saving" @click="onRegenerate">重新生成</el-button>
@@ -258,6 +309,8 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading, MoreFilled } from '@element-plus/icons-vue'
 import {
+  assembleConstraints,
+  blueprintQuestions,
   createNovel,
   deleteNovel,
   emptyBlueprint,
@@ -266,6 +319,7 @@ import {
   importNovel,
   normalizeBlueprint,
   startBlueprintTask,
+  type BlueprintQuestion,
   type BlueprintResultVO,
   type BlueprintTaskVO,
   type NovelBlueprint
@@ -352,6 +406,16 @@ const generating = ref(false)
 const saving = ref(false)
 const blueprint = ref<NovelBlueprint | null>(null)
 const generateMeta = ref<BlueprintResultVO | null>(null)
+
+/* ---------- 建书前的追问 ---------- */
+const asking = ref(false)
+const askingLoading = ref(false)
+const questions = ref<BlueprintQuestion[]>([])
+const answers = reactive<Record<string, string>>({})
+/** 已确认的创作约束：重新生成时沿用，不必再问一遍 */
+const constraintDraft = ref('')
+
+const stepActive = computed(() => (asking.value ? 2 : step.value === 0 ? 1 : 3))
 
 /* ---------- 生成进度 ---------- */
 const taskPercent = ref(0)
@@ -511,6 +575,11 @@ function resetCreate() {
   saving.value = false
   blueprint.value = null
   generateMeta.value = null
+  asking.value = false
+  askingLoading.value = false
+  questions.value = []
+  constraintDraft.value = ''
+  Object.keys(answers).forEach((key) => delete answers[key])
   resetTaskState()
   form.idea = ''
   form.title = ''
@@ -539,6 +608,25 @@ function closeCreate() {
   createVisible.value = false
 }
 
+/** 组装请求：追问与生成两处共用，保证 AI 在两步看到的是同一份作者信息 */
+function buildRequest(constraintText?: string) {
+  return {
+    title: form.title.trim() || undefined,
+    genre: form.genre || undefined,
+    tags: form.tags,
+    idea: form.idea.trim(),
+    style: form.style || undefined,
+    targetLength: form.targetLength || undefined,
+    protagonistHint: form.protagonistHint.trim() || undefined,
+    constraintText: constraintText || undefined
+  }
+}
+
+/**
+ * 第一步：让 AI 判断这个创意还缺哪些关键信息。
+ *
+ * <p>追问只是锦上添花——接口失败或没问到问题，都直接进生成，绝不把建书卡在这一步。</p>
+ */
 async function onGenerate() {
   if (!form.idea.trim()) {
     ElMessage.warning('请先写下核心创意')
@@ -548,6 +636,55 @@ async function onGenerate() {
     ElMessage.warning('核心创意太短了，再多写两句')
     return
   }
+  asking.value = false
+  questions.value = []
+  constraintDraft.value = ''
+  Object.keys(answers).forEach((key) => delete answers[key])
+  askingLoading.value = true
+  try {
+    const result = await blueprintQuestions(buildRequest())
+    questions.value = result.questions ?? []
+  } catch (error) {
+    console.warn('[bookshelf] 追问失败，直接生成', error)
+    questions.value = []
+  } finally {
+    askingLoading.value = false
+  }
+  if (questions.value.length === 0) {
+    await doGenerate('')
+    return
+  }
+  asking.value = true
+}
+
+/** 第二步：作者答完 → 组装成落库用的约束文本 → 开始四段生成 */
+async function onConfirmAnswers() {
+  const filled = questions.value
+    .map((item) => ({ key: item.key, label: item.label, value: (answers[item.key] || '').trim() }))
+    .filter((item) => item.value.length > 0)
+  let text = ''
+  if (filled.length > 0) {
+    try {
+      const result = await assembleConstraints(filled.map(({ key, value }) => ({ key, value })))
+      text = result.constraintText || ''
+    } catch (error) {
+      // 组装接口挂了就用本地拼法，格式与后端一致：「中文名：答案」逐行
+      console.warn('[bookshelf] 约束组装失败，改用本地拼装', error)
+      text = filled.map((item) => `${item.label}：${item.value}`).join('\n')
+    }
+  }
+  asking.value = false
+  await doGenerate(text)
+}
+
+/** 不想逐条回答：直接用已填信息开工 */
+async function onSkipAnswers() {
+  asking.value = false
+  await doGenerate('')
+}
+
+async function doGenerate(constraintText: string) {
+  constraintDraft.value = constraintText
   resetTaskState()
   generating.value = true
   taskStatus.value = 'RUNNING'
@@ -557,15 +694,7 @@ async function onGenerate() {
     elapsed.value += 1
   }, 1000)
   try {
-    const started = await startBlueprintTask({
-      title: form.title.trim() || undefined,
-      genre: form.genre || undefined,
-      tags: form.tags,
-      idea: form.idea.trim(),
-      style: form.style || undefined,
-      targetLength: form.targetLength || undefined,
-      protagonistHint: form.protagonistHint.trim() || undefined
-    })
+    const started = await startBlueprintTask(buildRequest(constraintText))
     taskPercent.value = started.percent || 4
     taskLabel.value = started.stepLabel || '正在生成世界观'
     const final = await pollBlueprintTask(started.taskId)
@@ -629,7 +758,8 @@ onBeforeUnmount(stopTimers)
 
 async function onRegenerate() {
   step.value = 0
-  await onGenerate()
+  // 已经确认过的约束不再重问，直接沿用
+  await doGenerate(constraintDraft.value)
 }
 
 async function onSave() {
@@ -926,6 +1056,41 @@ function statusLabel(value: string) {
 
 .required {
   color: var(--sf-text-danger);
+}
+
+/* 建书前的追问 */
+.ask-intro {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--sf-text-muted);
+}
+
+.ask-item {
+  padding: 12px 14px;
+  margin-top: 12px;
+  border: 1px solid var(--sf-border);
+  border-radius: 8px;
+  background: var(--sf-bg-subtle);
+}
+
+.ask-item .field-label {
+  margin: 0 0 8px;
+  line-height: 1.6;
+  font-weight: 500;
+  color: var(--sf-text-primary);
+}
+
+.ask-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-right: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sf-primary);
+  background: var(--sf-primary-soft, rgba(64, 158, 255, 0.12));
+  border-radius: 4px;
+  vertical-align: 1px;
 }
 
 .w-full {

@@ -358,11 +358,19 @@ public class NovelCreationTaskService {
         }
     }
 
-    /** 用户自定义过就用模板，否则回退内置常量。 */
+    /**
+     * 用户自定义过就用模板，否则回退内置常量。
+     *
+     * <p>这条路径的输入是灵感对话而不是建书表单，所以只填作品级变量；
+     * 蓝图模板里若引用 {@code idea}、{@code protagonistHint} 这类表单字段，这里会渲染为空
+     * （页面上的变量说明有写）。</p>
+     */
     private String systemPrompt(AiScene scene, NovelVO novel, String fallback) {
         Map<String, String> vars = new java.util.LinkedHashMap<>();
         vars.put("novelTitle", novel == null || !hasText(novel.getTitle()) ? "这本书" : novel.getTitle());
         vars.put("genre", novel == null || !hasText(novel.getGenre()) ? "通用" : novel.getGenre());
+        vars.put("tags", novel == null || novel.getTags() == null ? "" : String.join("、", novel.getTags()));
+        vars.put("synopsis", novel == null || !hasText(novel.getIntro()) ? "" : novel.getIntro().trim());
         String rendered = promptTemplateService.system(scene, vars);
         return hasText(rendered) ? rendered : fallback;
     }

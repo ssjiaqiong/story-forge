@@ -151,18 +151,22 @@ public class AiContentService {
 
         long startedAt = System.currentTimeMillis();
         SearchBundleVO search = search(chapter, detail, requirement, request, endpoint);
-        String userPrompt = buildPrompt(detail, chapter, chapters, events, items, factions,
-                requirement, targetWords, search);
         Map<String, String> promptVars = new java.util.LinkedHashMap<>();
         promptVars.put("novelTitle", detail.getNovel() == null ? "这本书" : detail.getNovel().getTitle());
         promptVars.put("genre", detail.getNovel() == null || detail.getNovel().getGenre() == null
                 ? "通用" : detail.getNovel().getGenre());
         promptVars.put("chapterNo", String.valueOf(chapter.chapterNo()));
         promptVars.put("targetWords", String.valueOf(targetWords));
+        // 上下文变量：模板里引用哪一个，user 段里同名块就不再生效，避免重复注入
+        promptVars.putAll(contextVariables(detail, chapter, chapters, events, items, factions,
+                requirement, search));
         String system = promptTemplateService.system(AiScene.BODY_GEN, promptVars);
         if (!hasText(system)) {
             system = systemPrompt(detail.getNovel());
         }
+        java.util.Set<String> used = promptTemplateService.usedVariables(AiScene.BODY_GEN);
+        String userPrompt = buildPrompt(detail, chapter, chapters, events, items, factions,
+                requirement, targetWords, search, used);
         ChatResult reply = chat(endpoint, system, userPrompt);
         String generated = cleanGenerated(reply.content());
         if (!hasText(generated)) {
@@ -363,29 +367,15 @@ public class AiContentService {
                                List<FactionVO> factions,
                                String requirement,
                                int targetWords,
-                               SearchBundleVO search) {
+                               SearchBundleVO search,
+                               java.util.Set<String> used) {
         NovelVO novel = detail.getNovel();
-        List<CharacterVO> characters = detail.getCharacters() == null ? List.of() : detail.getCharacters();
-        Map<Long, CharacterVO> characterById = new LinkedHashMap<>();
-        for (CharacterVO person : characters) {
-            characterById.put(person.getId(), person);
-        }
-
-        int index = -1;
-        for (int i = 0; i < chapters.size(); i++) {
-            if (chapters.get(i).id().equals(chapter.id())) {
-                index = i;
-                break;
-            }
-        }
-
-        List<CharacterVO> participants = resolveParticipants(chapter, characterById, characters);
-        Set<Long> participantIds = new LinkedHashSet<>();
-        Set<String> participantNames = new LinkedHashSet<>();
-        for (CharacterVO person : participants) {
-            participantIds.add(person.getId());
-            participantNames.add(person.getName());
-        }
+        PromptInputs in = promptInputs(detail, chapter, chapters, items, factions);
+        Map<Long, CharacterVO> characterById = in.characterById();
+        List<CharacterVO> participants = in.participants();
+        Set<Long> participantIds = in.participantIds();
+        Set<String> participantNames = in.participantNames();
+        int index = in.index();
 
         StringBuilder builder = new StringBuilder();
         builder.append("【作品】").append(novel.getTitle());
@@ -399,110 +389,78 @@ public class AiContentService {
         if (hasText(novel.getIntro())) {
             builder.append("简介：").append(truncate(novel.getIntro(), 500)).append("\n");
         }
+        PromptVars.appendConstraint(builder, detail, used, 1200);
 
         builder.append("\n【本章】第 ").append(chapter.chapterNo()).append(" 章 ").append(chapter.title()).append("\n");
-        if (hasText(chapter.summary())) {
-            builder.append("大纲：").append(chapter.summary().trim()).append("\n");
-        } else {
-            builder.append("大纲：（本章还没有大纲，按【近期走向】与前情自然推进，不要跳时间线）\n");
-        }
-
-        appendChapterEvents(builder, chapter, events);
-        appendParticipants(builder, participants, factions, characterById,
-                characterAssetService.attributesByCharacter(novel.getId()),
-                characterAssetService.inventoryByCharacter(novel.getId()));
-
-        builder.append("\n【本章相关物品】\n");
-        List<ItemVO> relatedItems = pickItems(items, participantNames);
-        if (relatedItems.isEmpty()) {
-            builder.append("（暂无物品档案；如情节需要道具，只用日常物件，不要凭空设定法宝或信物）\n");
-        } else {
-            for (ItemVO item : relatedItems) {
-                builder.append("- ").append(item.name());
-                List<String> tags = new ArrayList<>();
-                if (hasText(item.category())) {
-                    tags.add(item.category());
-                }
-                if (hasText(item.owner())) {
-                    tags.add("持有者 " + item.owner());
-                }
-                if (hasText(item.statusLabel())) {
-                    tags.add(item.statusLabel());
-                }
-                if (item.quantity() != null) {
-                    tags.add("数量 " + item.quantity());
-                }
-                if (!tags.isEmpty()) {
-                    builder.append("（").append(String.join("，", tags)).append("）");
-                }
-                builder.append("\n");
-                if (hasText(item.description())) {
-                    builder.append("  外形与特征：").append(truncate(item.description(), 120)).append("\n");
-                }
-                if (hasText(item.origin())) {
-                    builder.append("  来历与故事：").append(truncate(item.origin(), 120)).append("\n");
-                }
+        if (emit(used, "chapterSummary")) {
+            if (hasText(chapter.summary())) {
+                builder.append("大纲：").append(chapter.summary().trim()).append("\n");
+            } else {
+                builder.append("大纲：（本章还没有大纲，按【近期走向】与前情自然推进，不要跳时间线）\n");
             }
         }
 
-        builder.append("\n【相关势力】\n");
-        List<FactionVO> relatedFactions = pickFactions(factions, participantIds);
-        if (relatedFactions.isEmpty()) {
-            builder.append("（暂无势力档案；不要临时发明组织，需要背景时用泛称）\n");
-        } else {
-            for (FactionVO faction : relatedFactions) {
-                builder.append("- ").append(faction.name());
-                List<String> tags = new ArrayList<>();
-                if (hasText(faction.category())) {
-                    tags.add(faction.category());
-                }
-                if (hasText(faction.statusLabel())) {
-                    tags.add(faction.statusLabel());
-                }
-                builder.append("（").append(String.join("，", tags)).append("）");
-                if (hasText(faction.scope())) {
-                    builder.append(" 管辖/营业：").append(truncate(faction.scope(), 80));
-                }
-                builder.append("\n");
-                if (hasText(faction.remark())) {
-                    builder.append("  备注：").append(truncate(faction.remark(), 100)).append("\n");
-                }
-                String positions = participantPositions(faction, participantIds);
-                if (!positions.isEmpty()) {
-                    builder.append("  本章人物在其中的职位：").append(positions).append("\n");
-                }
-            }
+        if (emit(used, "events")) {
+            appendChapterEvents(builder, chapter, events);
+        }
+        if (emit(used, "characters")) {
+            appendParticipants(builder, participants, factions, characterById,
+                    characterAssetService.attributesByCharacter(novel.getId()),
+                    characterAssetService.inventoryByCharacter(novel.getId()));
         }
 
-        if (index > 0) {
-            appendRecentOutlines(builder, chapters, index);
-            appendEarlierSummary(builder, chapters, index);
-            appendPreviousTail(builder, chapters.get(index - 1));
-        } else {
-            builder.append("\n【前情】\n（这是全书第一章，没有前情；开篇不要写「回想当年」，直接把人放进具体处境）\n");
+        List<ItemVO> relatedItems = in.relatedItems();
+        if (emit(used, "items")) {
+            builder.append(renderItems(relatedItems));
         }
 
-        builder.append("\n【核心设定】\n");
-        appendSetting(builder, detail, "WORLDVIEW", "世界观", 1200);
-        appendSetting(builder, detail, "BACKGROUND", "背景", 800);
-        appendSetting(builder, detail, "CORE_CONFLICT", "核心冲突", 400);
-        appendSetting(builder, detail, "HIGHLIGHT", "核心看点", 300);
-        appendSetting(builder, detail, "STYLE", "文风基调", 300);
+        List<FactionVO> relatedFactions = in.relatedFactions();
+        if (emit(used, "factions")) {
+            builder.append(renderFactions(relatedFactions, participantIds));
+        }
+
+        if (emit(used, "previousSummary")) {
+            builder.append(renderPrevious(chapters, index));
+        }
+
+        // 五类设定全被模板引用时不再留下一个空标题
+        boolean anySetting = emit(used, "worldview") || emit(used, "background")
+                || emit(used, "coreConflict") || emit(used, "highlights") || emit(used, "style");
+        if (anySetting) {
+            builder.append("\n【核心设定】\n");
+        }
+        if (emit(used, "worldview")) {
+            appendSetting(builder, detail, "WORLDVIEW", "世界观", 1200);
+        }
+        if (emit(used, "background")) {
+            appendSetting(builder, detail, "BACKGROUND", "背景", 800);
+        }
+        if (emit(used, "coreConflict")) {
+            appendSetting(builder, detail, "CORE_CONFLICT", "核心冲突", 400);
+        }
+        if (emit(used, "highlights")) {
+            appendSetting(builder, detail, "HIGHLIGHT", "核心看点", 300);
+        }
+        if (emit(used, "style")) {
+            appendSetting(builder, detail, "STYLE", "文风基调", 300);
+        }
 
         String searchBlock = SearchPromptFormatter.format(search, 6);
-        if (!searchBlock.isEmpty()) {
+        if (!searchBlock.isEmpty() && emit(used, "searchResults")) {
             builder.append(searchBlock);
         }
 
-        builder.append("\n【作者要求】\n");
-        builder.append(requirement.isEmpty() ? "按大纲写完整的一章，注意人物动机与场景细节。" : requirement).append("\n");
+        if (emit(used, "authorRequirement")) {
+            builder.append("\n【作者要求】\n");
+            builder.append(requirement.isEmpty() ? "按大纲写完整的一章，注意人物动机与场景细节。" : requirement).append("\n");
+        }
 
         builder.append("\n【本章写作方法】\n")
                 .append("1. 开头三句内进入场景、动作或对话，并与上一章结尾的时间、地点、动作接上；不要用天气或背景介绍开场。\n")
                 .append("2. 本章至少完成一次「目标 → 阻碍 → 尝试 → 转折 → 代价」的推进；结束时局势必须和开始时不同。\n")
                 .append("3. 大纲里写到的事件要落地成具体场景，不要一笔带过；关联事件里的人物立场要写出来。\n")
-                .append("4. 出场人物只用【本章参与人物】里的角色；需要提到名单外的人时，只能是被提及，不要给对白与动作。\n")
-                .append("5. 物品按档案写：外形、磨损、来历细节可以复用，能力与数量不要超出档案；势力按档案的规矩与职位行事。\n")
+                .append("4. 出场人物只用已给出的人物档案里的角色；需要提到档案外的人时，只能是被提及，不要给对白与动作。\n")
+                .append("5. 物品与势力按已给出的档案写：外形、磨损、来历细节可以复用，能力与数量不要超出档案。\n")
                 .append("6. 对话要有潜台词：每个人说话方式不同，别让人物替作者解释设定。\n")
                 .append("7. 描写只选 2~3 个关键感官细节（声音、气味、触感、光线），服务于人物处境，不要堆形容词。\n")
                 .append("8. 视角统一：以【文风基调】约定的人称为准；未约定时用第三人称限知，不写视角人物看不到、听不到的信息。\n")
@@ -517,6 +475,206 @@ public class AiContentService {
                 .append("- 禁止输出章节标题、作者注释、「本章完」或字数统计。\n")
                 .append("- 禁止出现「根据搜索结果」「资料显示」这类出戏表达；与设定冲突时以设定为准。\n")
                 .append("- 禁止让本章人物知道他们不可能知道的信息（未在场的对话、未公开的秘密）。\n");
+        return builder.toString();
+    }
+
+    /**
+     * 模板已经引用了这个上下文变量时返回 {@code false}：user 消息里不再重复输出同一块。
+     *
+     * <p>默认模板不引用任何上下文变量，返回集合为空，因此现有行为与改造前完全一致；
+     * 只有用户主动在模板里写了 {@code {{worldview}}} 这类占位符，才会触发裁剪。</p>
+     */
+    private boolean emit(java.util.Set<String> used, String variable) {
+        return used == null || !used.contains(variable);
+    }
+
+    /** 一次生成要用的中间量：buildPrompt 与模板变量共用，避免两处各算一遍。 */
+    private record PromptInputs(int index,
+                                Map<Long, CharacterVO> characterById,
+                                List<CharacterVO> participants,
+                                Set<Long> participantIds,
+                                Set<String> participantNames,
+                                List<ItemVO> relatedItems,
+                                List<FactionVO> relatedFactions) {
+    }
+
+    private PromptInputs promptInputs(NovelDetailVO detail,
+                                      ChapterVO chapter,
+                                      List<ChapterVO> chapters,
+                                      List<ItemVO> items,
+                                      List<FactionVO> factions) {
+        List<CharacterVO> characters = detail.getCharacters() == null ? List.of() : detail.getCharacters();
+        Map<Long, CharacterVO> characterById = new LinkedHashMap<>();
+        for (CharacterVO person : characters) {
+            characterById.put(person.getId(), person);
+        }
+        int index = -1;
+        for (int i = 0; i < chapters.size(); i++) {
+            if (chapters.get(i).id().equals(chapter.id())) {
+                index = i;
+                break;
+            }
+        }
+        List<CharacterVO> participants = resolveParticipants(chapter, characterById, characters);
+        Set<Long> participantIds = new LinkedHashSet<>();
+        Set<String> participantNames = new LinkedHashSet<>();
+        for (CharacterVO person : participants) {
+            participantIds.add(person.getId());
+            participantNames.add(person.getName());
+        }
+        return new PromptInputs(index, characterById, participants, participantIds, participantNames,
+                pickItems(items, participantNames), pickFactions(factions, participantIds));
+    }
+
+    /**
+     * 上下文变量池：键名与 {@code PromptSceneRegistry} 里登记的变量一一对应。
+     *
+     * <p>值就是「本来要拼进 user 消息的那一段」，因此模板引用它之后，
+     * user 段里同名块被裁掉，信息不重复也不丢失。</p>
+     */
+    private Map<String, String> contextVariables(NovelDetailVO detail,
+                                                 ChapterVO chapter,
+                                                 List<ChapterVO> chapters,
+                                                 List<TimelineVO> events,
+                                                 List<ItemVO> items,
+                                                 List<FactionVO> factions,
+                                                 String requirement,
+                                                 SearchBundleVO search) {
+        Map<String, String> vars = new LinkedHashMap<>();
+        NovelVO novel = detail.getNovel();
+        if (novel != null) {
+            vars.put("tags", novel.getTags() == null ? "" : String.join("、", novel.getTags()));
+            vars.put("synopsis", hasText(novel.getIntro()) ? novel.getIntro().trim() : "");
+        }
+        vars.put("chapterTitle", chapter.title() == null ? "" : chapter.title().trim());
+        vars.put("chapterSummary", chapter.summary() == null ? "" : chapter.summary().trim());
+        vars.put("authorRequirement", requirement);
+        vars.put("constraints", PromptVars.constraint(detail, 1200));
+        vars.put("worldview", settingText(detail, "WORLDVIEW", 1200));
+        vars.put("background", settingText(detail, "BACKGROUND", 800));
+        vars.put("coreConflict", settingText(detail, "CORE_CONFLICT", 400));
+        vars.put("highlights", settingText(detail, "HIGHLIGHT", 300));
+        vars.put("style", settingText(detail, "STYLE", 300));
+
+        PromptInputs in = promptInputs(detail, chapter, chapters, items, factions);
+        vars.put("events", renderChapterEvents(chapter, events));
+        vars.put("characters", novel == null ? "" : renderParticipants(in.participants(), factions,
+                in.characterById(),
+                characterAssetService.attributesByCharacter(novel.getId()),
+                characterAssetService.inventoryByCharacter(novel.getId())));
+        vars.put("items", renderItems(in.relatedItems()));
+        vars.put("factions", renderFactions(in.relatedFactions(), in.participantIds()));
+        vars.put("previousSummary", renderPrevious(chapters, in.index()));
+        vars.put("searchResults", SearchPromptFormatter.format(search, 6));
+        // 空块统一成空串，模板里的占位符直接消失，不留下空段落
+        vars.replaceAll((key, value) -> value == null ? "" : value);
+        return vars;
+    }
+
+    private String settingText(NovelDetailVO detail, String category, int max) {
+        if (detail.getSettings() == null) {
+            return "";
+        }
+        for (SettingDocVO doc : detail.getSettings()) {
+            if (category.equals(doc.getCategory()) && hasText(doc.getContent())) {
+                return truncate(doc.getContent(), max);
+            }
+        }
+        return "";
+    }
+
+    private String renderChapterEvents(ChapterVO chapter, List<TimelineVO> events) {
+        StringBuilder builder = new StringBuilder();
+        appendChapterEvents(builder, chapter, events);
+        return builder.toString();
+    }
+
+    private String renderParticipants(List<CharacterVO> participants,
+                                      List<FactionVO> factions,
+                                      Map<Long, CharacterVO> characterById,
+                                      Map<Long, List<AttributeVO>> attributes,
+                                      Map<Long, List<InventoryVO>> inventories) {
+        StringBuilder builder = new StringBuilder();
+        appendParticipants(builder, participants, factions, characterById, attributes, inventories);
+        return builder.toString();
+    }
+
+    private String renderItems(List<ItemVO> relatedItems) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("\n【本章相关物品】\n");
+        if (relatedItems.isEmpty()) {
+            builder.append("（暂无物品档案；如情节需要道具，只用日常物件，不要凭空设定法宝或信物）\n");
+            return builder.toString();
+        }
+        for (ItemVO item : relatedItems) {
+            builder.append("- ").append(item.name());
+            List<String> tags = new ArrayList<>();
+            if (hasText(item.category())) {
+                tags.add(item.category());
+            }
+            if (hasText(item.owner())) {
+                tags.add("持有者 " + item.owner());
+            }
+            if (hasText(item.statusLabel())) {
+                tags.add(item.statusLabel());
+            }
+            if (item.quantity() != null) {
+                tags.add("数量 " + item.quantity());
+            }
+            if (!tags.isEmpty()) {
+                builder.append("（").append(String.join("，", tags)).append("）");
+            }
+            builder.append("\n");
+            if (hasText(item.description())) {
+                builder.append("  外形与特征：").append(truncate(item.description(), 120)).append("\n");
+            }
+            if (hasText(item.origin())) {
+                builder.append("  来历与故事：").append(truncate(item.origin(), 120)).append("\n");
+            }
+        }
+        return builder.toString();
+    }
+
+    private String renderFactions(List<FactionVO> relatedFactions, Set<Long> participantIds) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("\n【相关势力】\n");
+        if (relatedFactions.isEmpty()) {
+            builder.append("（暂无势力档案；不要临时发明组织，需要背景时用泛称）\n");
+            return builder.toString();
+        }
+        for (FactionVO faction : relatedFactions) {
+            builder.append("- ").append(faction.name());
+            List<String> tags = new ArrayList<>();
+            if (hasText(faction.category())) {
+                tags.add(faction.category());
+            }
+            if (hasText(faction.statusLabel())) {
+                tags.add(faction.statusLabel());
+            }
+            builder.append("（").append(String.join("，", tags)).append("）");
+            if (hasText(faction.scope())) {
+                builder.append(" 管辖/营业：").append(truncate(faction.scope(), 80));
+            }
+            builder.append("\n");
+            if (hasText(faction.remark())) {
+                builder.append("  备注：").append(truncate(faction.remark(), 100)).append("\n");
+            }
+            String positions = participantPositions(faction, participantIds);
+            if (!positions.isEmpty()) {
+                builder.append("  本章人物在其中的职位：").append(positions).append("\n");
+            }
+        }
+        return builder.toString();
+    }
+
+    private String renderPrevious(List<ChapterVO> chapters, int index) {
+        if (index <= 0) {
+            return "\n【前情】\n（这是全书第一章，没有前情；开篇不要写「回想当年」，直接把人放进具体处境）\n";
+        }
+        StringBuilder builder = new StringBuilder();
+        appendRecentOutlines(builder, chapters, index);
+        appendEarlierSummary(builder, chapters, index);
+        appendPreviousTail(builder, chapters.get(index - 1));
         return builder.toString();
     }
 

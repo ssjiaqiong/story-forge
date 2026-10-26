@@ -108,6 +108,17 @@ public class NovelServiceImpl implements NovelService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public void updateConstraint(Long novelId, String constraintText) {
+        if (novelId == null) {
+            return;
+        }
+        NovelEntity patch = new NovelEntity();
+        patch.setId(novelId);
+        patch.setConstraintText(constraintText);
+        novelMapper.updateById(patch);
+    }
+
+    @Override
     public NovelVO update(Long id, NovelPatch patch) {
         NovelEntity existing = novelMapper.selectById(id);
         if (existing == null) {
@@ -253,6 +264,7 @@ public class NovelServiceImpl implements NovelService {
         vo.setInspirationSessionId(entity.getInspirationSessionId());
         vo.setChapterCount(entity.getChapterCount());
         vo.setWordCount(entity.getWordCount());
+        vo.setConstraintText(entity.getConstraintText());
         vo.setCreatedAt(entity.getCreatedAt());
         vo.setUpdatedAt(entity.getUpdatedAt());
         return vo;

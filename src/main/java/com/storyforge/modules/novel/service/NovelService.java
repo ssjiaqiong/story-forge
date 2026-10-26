@@ -22,6 +22,14 @@ public interface NovelService {
     /** 修改书名 / 题材 / 标签 / 简介 / 状态。 */
     NovelVO update(Long id, NovelPatch patch);
 
+    /**
+     * 只更新创作约束（建书追问得到的读者画像、禁忌等）。
+     *
+     * <p>单独一个方法而不塞进 {@link NovelPatch}：这两个字段的生命周期不同，
+     * 约束是建书那一刻确定的，日常编辑不该顺手改掉。</p>
+     */
+    void updateConstraint(Long novelId, String constraintText);
+
     /** 逻辑删除小说（设定与角色由调用方一并清理）。 */
     void delete(Long id);
 }

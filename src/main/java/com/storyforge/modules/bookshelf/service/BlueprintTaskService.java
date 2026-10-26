@@ -247,6 +247,8 @@ public class BlueprintTaskService {
         long startedAt = System.currentTimeMillis();
         try {
             NovelBlueprint blueprint = new NovelBlueprint();
+            // 建书前追问得到的创作约束随蓝图一起带回，建书时落库
+            blueprint.setConstraintText(truncate(request.getConstraintText(), 2000));
 
             // 1. 世界观
             JsonNode worldview = callStage(task, endpoints, AiScene.BLUEPRINT_WORLDVIEW, 1, "正在生成世界观",
@@ -329,8 +331,8 @@ public class BlueprintTaskService {
                                NovelBlueprint current, int maxTokens) {
         task.step(stepNo, label, percent);
         AiEndpoint base = endpoints.get(scene);
-        String systemPrompt = systemPrompt(scene, request, fallbackPrompt);
-        String userPrompt = buildPrompt(request, current);
+        String systemPrompt = systemPrompt(scene, request, current, fallbackPrompt);
+        String userPrompt = buildPrompt(request, current, promptTemplateService.usedVariables(scene));
         try {
             return parse(chat(scene, base, systemPrompt, userPrompt, maxTokens).content(), label);
         } catch (BizException ex) {
@@ -343,12 +345,29 @@ public class BlueprintTaskService {
         }
     }
 
-    /** 用户自定义过就用模板，否则回退内置常量。 */
-    private String systemPrompt(AiScene scene, BlueprintRequest request, String fallback) {
+    /**
+     * 用户自定义过就用模板，否则回退内置常量。
+     *
+     * <p>作者在表单里填的创意、风格、篇幅、主角偏好，以及前几段已经生成的结果（世界观、背景、简介）
+     * 都作为变量交出去；模板里引用哪一个，user 段里同名的那一块就不再重复。</p>
+     */
+    private String systemPrompt(AiScene scene, BlueprintRequest request,
+                                NovelBlueprint current, String fallback) {
         Map<String, String> vars = new java.util.LinkedHashMap<>();
         vars.put("novelTitle", hasText(request.getTitle()) ? request.getTitle().trim() : "这本书");
         vars.put("genre", hasText(request.getGenre()) ? request.getGenre().trim() : "通用");
-        String rendered = promptTemplateService.system(scene, vars);
+        vars.put("tags", request.getTags() == null ? "" : String.join("、", request.getTags()));
+        vars.put("idea", request.getIdea());
+        vars.put("style", request.getStyle());
+        vars.put("targetLength", request.getTargetLength());
+        vars.put("protagonistHint", request.getProtagonistHint());
+        vars.put("constraints", request.getConstraintText());
+        if (current != null) {
+            vars.put("worldview", current.getWorldview());
+            vars.put("background", current.getBackground());
+            vars.put("synopsis", current.getSynopsis());
+        }
+        String rendered = promptTemplateService.system(scene, PromptVars.clean(vars));
         return hasText(rendered) ? rendered : fallback;
     }
 
@@ -399,27 +418,48 @@ public class BlueprintTaskService {
     /* 提示词与数据整理                                                   */
     /* ------------------------------------------------------------------ */
 
-    private String buildPrompt(BlueprintRequest request, NovelBlueprint current) {
+    private String buildPrompt(BlueprintRequest request, NovelBlueprint current, java.util.Set<String> used) {
         StringBuilder builder = new StringBuilder();
-        builder.append("【作者信息】\n");
-        appendLine(builder, "书名", request.getTitle());
-        appendLine(builder, "题材", request.getGenre());
-        if (request.getTags() != null && !request.getTags().isEmpty()) {
-            appendLine(builder, "标签", String.join("、", request.getTags()));
+        StringBuilder author = new StringBuilder();
+        if (PromptVars.emit(used, "novelTitle")) {
+            appendLine(author, "书名", request.getTitle());
         }
-        appendLine(builder, "核心创意", request.getIdea());
-        appendLine(builder, "风格偏好", request.getStyle());
-        appendLine(builder, "目标篇幅", request.getTargetLength());
-        appendLine(builder, "主角偏好", request.getProtagonistHint());
+        if (PromptVars.emit(used, "genre")) {
+            appendLine(author, "题材", request.getGenre());
+        }
+        if (PromptVars.emit(used, "tags") && request.getTags() != null && !request.getTags().isEmpty()) {
+            appendLine(author, "标签", String.join("、", request.getTags()));
+        }
+        if (PromptVars.emit(used, "idea")) {
+            appendLine(author, "核心创意", request.getIdea());
+        }
+        if (PromptVars.emit(used, "style")) {
+            appendLine(author, "风格偏好", request.getStyle());
+        }
+        if (PromptVars.emit(used, "targetLength")) {
+            appendLine(author, "目标篇幅", request.getTargetLength());
+        }
+        if (PromptVars.emit(used, "protagonistHint")) {
+            appendLine(author, "主角偏好", request.getProtagonistHint());
+        }
+        if (!author.isEmpty()) {
+            builder.append("【作者信息】\n").append(author);
+        }
+
+        // 建书前追问出来的约束：优先于 AI 自己的推断，必须放在设定之前
+        if (hasText(request.getConstraintText()) && PromptVars.emit(used, "constraints")) {
+            builder.append("\n【创作约束（作者已确认，必须遵守）】\n")
+                    .append(abbreviate(request.getConstraintText(), 1200)).append("\n");
+        }
 
         if (current != null) {
-            if (hasText(current.getWorldview())) {
+            if (hasText(current.getWorldview()) && PromptVars.emit(used, "worldview")) {
                 builder.append("\n【已确定的世界观】\n").append(abbreviate(current.getWorldview(), 1500)).append("\n");
             }
-            if (hasText(current.getBackground())) {
+            if (hasText(current.getBackground()) && PromptVars.emit(used, "background")) {
                 builder.append("\n【已确定的背景】\n").append(abbreviate(current.getBackground(), 1200)).append("\n");
             }
-            if (hasText(current.getSynopsis())) {
+            if (hasText(current.getSynopsis()) && PromptVars.emit(used, "synopsis")) {
                 builder.append("\n【已确定的简介】\n").append(abbreviate(current.getSynopsis(), 800)).append("\n");
             }
         }

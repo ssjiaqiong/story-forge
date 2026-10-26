@@ -30,6 +30,8 @@ export interface NovelBlueprint {
   style?: string
   protagonist?: CharacterDraft
   characters: CharacterDraft[]
+  /** 创作约束：建书前追问的作答，注入此后所有 AI 生成 */
+  constraintText?: string
 }
 
 /** 生成蓝图入参 */
@@ -41,6 +43,26 @@ export interface BlueprintRequest {
   style?: string
   targetLength?: string
   protagonistHint?: string
+  /** 创作约束，由 assembleConstraints 组装后原样带上 */
+  constraintText?: string
+}
+
+/** 建书前的追问 */
+export interface BlueprintQuestion {
+  key: string
+  label: string
+  question: string
+  hint?: string
+}
+
+export interface BlueprintQuestionsVO {
+  questions: BlueprintQuestion[]
+  model?: string
+}
+
+export interface ConstraintAnswer {
+  key: string
+  value: string
 }
 
 export interface BlueprintResultVO {
@@ -102,6 +124,16 @@ export function generateBlueprint(payload: BlueprintRequest) {
 /** 启动分段生成任务（世界观 / 背景 / 冲突 / 人物），返回 taskId */
 export function startBlueprintTask(payload: BlueprintRequest) {
   return api.post<BlueprintTaskVO>('/bookshelf/blueprint/tasks', payload, 30000)
+}
+
+/** 建书前的信息追问：AI 判断这个创意还缺什么（可能返回空列表） */
+export function blueprintQuestions(payload: BlueprintRequest) {
+  return api.post<BlueprintQuestionsVO>('/bookshelf/blueprint/questions', payload, 120000)
+}
+
+/** 把追问的作答组装成落库用的创作约束文本 */
+export function assembleConstraints(answers: ConstraintAnswer[]) {
+  return api.post<{ constraintText: string }>('/bookshelf/blueprint/constraints', { answers }, 15000)
 }
 
 /** 轮询生成进度 */
@@ -189,7 +221,9 @@ export function normalizeBlueprint(source?: Partial<NovelBlueprint> | null): Nov
     highlights: source.highlights ?? [],
     style: source.style ?? '',
     protagonist: { ...emptyCharacter('PROTAGONIST'), ...(source.protagonist ?? {}) },
-    characters: (source.characters ?? []).map((item) => ({ ...emptyCharacter(), ...item }))
+    characters: (source.characters ?? []).map((item) => ({ ...emptyCharacter(), ...item })),
+    // 约束为空表示「这本小说没填过」，不能写成空串——后端把空串当成「清空」
+    constraintText: source.constraintText ?? undefined
   }
 }
 

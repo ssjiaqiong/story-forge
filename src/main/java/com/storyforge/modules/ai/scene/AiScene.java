@@ -26,6 +26,7 @@ public enum AiScene {
     BLUEPRINT_BACKGROUND("蓝图 · 背景", "蓝图", AiConfigKind.TEXT),
     BLUEPRINT_CONFLICT("蓝图 · 简介与冲突", "蓝图", AiConfigKind.TEXT),
     BLUEPRINT_CHARACTER("蓝图 · 人物", "蓝图", AiConfigKind.TEXT),
+    BLUEPRINT_QUESTIONS("蓝图 · 信息追问", "蓝图", AiConfigKind.TEXT),
     CHARACTER_BUILD("角色生成", "角色与设定", AiConfigKind.TEXT),
     ITEM_BUILD("物品生成", "角色与设定", AiConfigKind.TEXT),
     FACTION_BUILD("势力生成", "角色与设定", AiConfigKind.TEXT),

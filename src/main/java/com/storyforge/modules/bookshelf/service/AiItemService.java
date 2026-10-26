@@ -96,8 +96,9 @@ public class AiItemService {
                 MAX_TOKENS);
 
         long startedAt = System.currentTimeMillis();
-        String userPrompt = buildPrompt(detail, existing, requirement, count);
-        String system = systemPrompt(detail, count);
+        java.util.Set<String> used = promptTemplateService.usedVariables(AiScene.ITEM_BUILD);
+        String userPrompt = buildPrompt(detail, existing, requirement, count, used);
+        String system = systemPrompt(detail, count, requirement);
         ChatResult reply = chat(endpoint, system, userPrompt);
         JsonNode root;
         try {
@@ -116,13 +117,17 @@ public class AiItemService {
     }
 
     /** 用户改过提示词就用模板，否则用内置常量。 */
-    private String systemPrompt(NovelDetailVO detail, int count) {
+    private String systemPrompt(NovelDetailVO detail, int count, String requirement) {
         var novel = detail == null ? null : detail.getNovel();
         Map<String, String> vars = new java.util.LinkedHashMap<>();
         vars.put("novelTitle", novel == null || !hasText(novel.getTitle()) ? "这本书" : novel.getTitle());
         vars.put("genre", novel == null || !hasText(novel.getGenre()) ? "通用" : novel.getGenre());
         vars.put("count", String.valueOf(count));
-        String rendered = promptTemplateService.system(AiScene.ITEM_BUILD, vars);
+        vars.put("authorRequirement", requirement == null ? "" : requirement);
+        PromptVars.putNovel(vars, novel, 400);
+        PromptVars.putSettings(vars, detail, 800, 500, 400, 300, 300);
+        vars.put("constraints", PromptVars.constraint(detail, 1200));
+        String rendered = promptTemplateService.system(AiScene.ITEM_BUILD, PromptVars.clean(vars));
         return hasText(rendered) ? rendered : SYSTEM_PROMPT;
     }
 
@@ -188,7 +193,8 @@ public class AiItemService {
     private String buildPrompt(NovelDetailVO detail,
                                List<ItemVO> existing,
                                String requirement,
-                               int count) {
+                               int count,
+                               java.util.Set<String> used) {
         NovelVO novel = detail.getNovel();
         StringBuilder builder = new StringBuilder();
         builder.append("【作品信息】\n");
@@ -203,10 +209,20 @@ public class AiItemService {
             builder.append("简介：").append(truncate(novel.getIntro(), 400)).append("\n");
         }
 
-        builder.append("\n【核心设定】\n");
-        appendSetting(builder, detail, "WORLDVIEW", "世界观", 800);
-        appendSetting(builder, detail, "BACKGROUND", "背景", 500);
-        appendSetting(builder, detail, "CORE_CONFLICT", "核心冲突", 400);
+        boolean anySetting = PromptVars.emit(used, "worldview") || PromptVars.emit(used, "background")
+                || PromptVars.emit(used, "coreConflict");
+        if (anySetting) {
+            builder.append("\n【核心设定】\n");
+            if (PromptVars.emit(used, "worldview")) {
+                appendSetting(builder, detail, "WORLDVIEW", "世界观", 800);
+            }
+            if (PromptVars.emit(used, "background")) {
+                appendSetting(builder, detail, "BACKGROUND", "背景", 500);
+            }
+            if (PromptVars.emit(used, "coreConflict")) {
+                appendSetting(builder, detail, "CORE_CONFLICT", "核心冲突", 400);
+            }
+        }
 
         builder.append("\n【主要角色】\n");
         List<CharacterVO> characters = detail.getCharacters() == null ? List.of() : detail.getCharacters();
@@ -245,7 +261,10 @@ public class AiItemService {
             }
         }
 
-        builder.append("\n【作者要求】\n").append(requirement).append("\n");
+        PromptVars.appendConstraint(builder, detail, used, 1200);
+        if (PromptVars.emit(used, "authorRequirement")) {
+            builder.append("\n【作者要求】\n").append(requirement).append("\n");
+        }
         builder.append("\n【本次任务】\n生成 ").append(count).append(" 个新物品，不要与已有物品重名。\n");
 
         builder.append("""

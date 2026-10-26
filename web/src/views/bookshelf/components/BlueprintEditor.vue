@@ -50,6 +50,21 @@
 
     <section class="bp-block">
       <div class="bp-block-head">
+        <span class="bp-block-title">创作约束</span>
+        <span class="bp-block-hint">作为硬要求注入此后所有 AI 生成</span>
+      </div>
+      <el-input
+        v-model="constraintText"
+        type="textarea"
+        :rows="4"
+        maxlength="2000"
+        show-word-limit
+        placeholder="每行一条，AI 会当成硬要求遵守。如：&#10;主角设定：被逐出宗门的杂役，背着师门旧案的嫌疑&#10;主角目标：找回失传的残卷，替师父翻案"
+      />
+    </section>
+
+    <section class="bp-block">
+      <div class="bp-block-head">
         <span class="bp-block-title">世界与故事</span>
         <span class="bp-block-hint">世界观与背景会作为后续大纲、正文生成的上下文</span>
       </div>
@@ -205,6 +220,14 @@ const TAG_SUGGESTIONS = ['升级流', '群像', '轻松', '无敌流', '单女�
 const protagonist = computed<CharacterDraft>(() => blueprint.value.protagonist as CharacterDraft)
 
 const characters = computed(() => blueprint.value.characters ?? [])
+
+/** 创作约束：没填过时为 undefined，只有作者改过才写回蓝图（避免把已有约束清空） */
+const constraintText = computed({
+  get: () => blueprint.value.constraintText ?? '',
+  set: (value: string) => {
+    blueprint.value.constraintText = value
+  }
+})
 
 const highlightText = computed(() => (blueprint.value.highlights ?? []).join('\n'))
 

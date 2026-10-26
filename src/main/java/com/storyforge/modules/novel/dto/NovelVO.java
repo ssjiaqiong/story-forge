@@ -43,6 +43,9 @@ public class NovelVO {
 
     private Integer wordCount;
 
+    @Schema(description = "创作约束：建书时补充的读者画像、禁忌等，会注入所有 AI 创作场景")
+    private String constraintText;
+
     @Schema(description = "封面列表，主封面在前（书架按此顺序左右切换，最多 5 张）")
     private List<NovelCoverVO> covers = new ArrayList<>();
 

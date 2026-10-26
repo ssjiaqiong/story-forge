@@ -319,6 +319,12 @@ public class BookshelfServiceImpl implements BookshelfService {
         }
         if (blueprint != null) {
             saveProfile(novel.getId(), blueprint);
+            // 创作约束是本子后续所有生成的依据，建书时就落库，不必再走一次编辑
+            if (hasText(blueprint.getConstraintText())) {
+                String constraint = blueprint.getConstraintText().trim();
+                novelService.updateConstraint(novel.getId(), constraint);
+                novel.setConstraintText(constraint);
+            }
         }
         log.info("[bookshelf] novel created id={} userId={} title={} withProfile={}",
                 novel.getId(), UserContextHolder.requireUserId(), novel.getTitle(), blueprint != null);
@@ -377,6 +383,13 @@ public class BookshelfServiceImpl implements BookshelfService {
                 request.getStatus()));
         if (request.getBlueprint() != null) {
             saveProfile(id, request.getBlueprint());
+            // 编辑时带上蓝图即整体覆盖：约束给了空串就是「清空」，不给 null 才是不改
+            String constraint = request.getBlueprint().getConstraintText();
+            if (constraint != null) {
+                String text = constraint.trim();
+                novelService.updateConstraint(id, text);
+                novel.setConstraintText(text);
+            }
         }
         return novel;
     }

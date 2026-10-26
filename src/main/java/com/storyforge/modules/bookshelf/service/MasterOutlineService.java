@@ -182,12 +182,18 @@ public class MasterOutlineService {
         vars.put("count", String.valueOf(count));
         vars.put("coverage", chapterCount > 0
                 ? "在此基础上继续往后规划，不要重复已写章节" : "全书主线");
-        String system = promptTemplateService.system(AiScene.MASTER_OUTLINE, vars);
+        vars.put("authorRequirement", requirement);
+        PromptVars.putNovel(vars, novel, MAX_TEXT_IN_PROMPT);
+        PromptVars.putSettings(vars, detail, MAX_TEXT_IN_PROMPT, MAX_TEXT_IN_PROMPT,
+                MAX_TEXT_IN_PROMPT, MAX_TEXT_IN_PROMPT, MAX_TEXT_IN_PROMPT);
+        vars.put("constraints", PromptVars.constraint(detail, 1200));
+        String system = promptTemplateService.system(AiScene.MASTER_OUTLINE, PromptVars.clean(vars));
         if (!hasText(system)) {
             system = "你是资深小说总策划，把整本书的剧情走向拆成若干条总纲：每条一段文字，只写剧情推进，不写人物档案。只输出 JSON。";
         }
 
-        String userPrompt = buildPrompt(detail, existing, events, chapterCount, count, requirement);
+        String userPrompt = buildPrompt(detail, existing, events, chapterCount, count, requirement,
+                promptTemplateService.usedVariables(AiScene.MASTER_OUTLINE));
         JsonNode root = parse(chat(endpoint, system, userPrompt).content());
 
         JsonNode list = root.path("outlines");
@@ -283,7 +289,8 @@ public class MasterOutlineService {
                                List<TimelineVO> events,
                                int chapterCount,
                                int count,
-                               String requirement) {
+                               String requirement,
+                               java.util.Set<String> used) {
         StringBuilder builder = new StringBuilder();
         var novel = detail.getNovel();
         builder.append("【作品】《").append(novel == null || !hasText(novel.getTitle())
@@ -296,21 +303,28 @@ public class MasterOutlineService {
             builder.append("【简介】").append(truncate(novel.getIntro(), MAX_TEXT_IN_PROMPT)).append("\n");
         }
 
-        builder.append("\n【已定设定】\n");
+        StringBuilder settingsBlock = new StringBuilder();
         for (SettingDocVO doc : detail.getSettings() == null ? List.<SettingDocVO>of() : detail.getSettings()) {
             if (doc == null || !hasText(doc.getContent())) {
                 continue;
             }
-            builder.append("- ").append(hasText(doc.getLabel()) ? doc.getLabel() : doc.getCategory())
+            if (!PromptVars.emit(used, PromptVars.variableOf(doc.getCategory()))) {
+                // 这一类设定模板已经引用过了，不再重复
+                continue;
+            }
+            settingsBlock.append("- ").append(hasText(doc.getLabel()) ? doc.getLabel() : doc.getCategory())
                     .append("：").append(truncate(doc.getContent(), MAX_TEXT_IN_PROMPT)).append("\n");
+        }
+        if (!settingsBlock.isEmpty()) {
+            builder.append("\n【已定设定】\n").append(settingsBlock);
         }
 
         List<CharacterVO> characters = detail.getCharacters() == null ? List.of() : detail.getCharacters();
         if (!characters.isEmpty()) {
             builder.append("\n【关键人物】\n");
-            int used = 0;
+            int taken = 0;
             for (CharacterVO person : characters) {
-                if (used++ >= MAX_CHARACTERS_IN_PROMPT) {
+                if (taken++ >= MAX_CHARACTERS_IN_PROMPT) {
                     break;
                 }
                 builder.append("- ").append(person.getName());
@@ -326,9 +340,9 @@ public class MasterOutlineService {
 
         if (events != null && !events.isEmpty()) {
             builder.append("\n【可用事件】\n");
-            int used = 0;
+            int taken = 0;
             for (TimelineVO event : events) {
-                if (used++ >= MAX_EVENTS_IN_PROMPT) {
+                if (taken++ >= MAX_EVENTS_IN_PROMPT) {
                     break;
                 }
                 builder.append("- ").append(event.title());
@@ -349,9 +363,12 @@ public class MasterOutlineService {
             builder.append("\n【已写章节】共 ").append(chapterCount).append(" 章，新总纲要与其后剧情衔接。\n");
         }
 
-        builder.append("\n【本次要求】\n");
-        builder.append(hasText(requirement) ? requirement
-                : "按现有设定把故事主线拆成有因果递进的总纲，覆盖开局到结局方向。").append("\n");
+        PromptVars.appendConstraint(builder, detail, used, 1200);
+        if (PromptVars.emit(used, "authorRequirement")) {
+            builder.append("\n【本次要求】\n");
+            builder.append(hasText(requirement) ? requirement
+                    : "按现有设定把故事主线拆成有因果递进的总纲，覆盖开局到结局方向。").append("\n");
+        }
         builder.append("\n请输出 ").append(count).append(" 条总纲。");
         return builder.toString();
     }

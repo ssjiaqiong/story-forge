@@ -127,14 +127,19 @@ public class AiOutlineService {
         List<CharacterVO> forced = resolveForced(detail.getCharacters(), request);
         MasterOutlineEntity masterOutline = resolveMasterOutline(novelId, request);
         String userPrompt = buildPrompt(detail, existing, events, relations, forced,
-                requirement, count, request, search, masterOutline);
+                requirement, count, request, search, masterOutline,
+                promptTemplateService.usedVariables(AiScene.OUTLINE_GEN));
         java.util.Map<String, String> promptVars = new java.util.LinkedHashMap<>();
         var novelInfo = detail.getNovel();
         promptVars.put("novelTitle", novelInfo == null ? "这本书" : novelInfo.getTitle());
         promptVars.put("genre", novelInfo == null || !hasText(novelInfo.getGenre())
                 ? "通用" : novelInfo.getGenre());
         promptVars.put("chapterCount", String.valueOf(count));
-        String system = promptTemplateService.system(AiScene.OUTLINE_GEN, promptVars);
+        promptVars.put("authorRequirement", requirement);
+        PromptVars.putNovel(promptVars, novelInfo, 800);
+        PromptVars.putSettings(promptVars, detail, 1600, 1200, 600, 500, 300);
+        promptVars.put("constraints", PromptVars.constraint(detail, 1200));
+        String system = promptTemplateService.system(AiScene.OUTLINE_GEN, PromptVars.clean(promptVars));
         if (!hasText(system)) {
             system = SYSTEM_PROMPT;
         }
@@ -451,7 +456,8 @@ public class AiOutlineService {
                                int count,
                                OutlineGenerateRequest request,
                                SearchBundleVO search,
-                               MasterOutlineEntity masterOutline) {
+                               MasterOutlineEntity masterOutline,
+                               java.util.Set<String> used) {
         NovelVO novel = detail.getNovel();
         StringBuilder builder = new StringBuilder();
         if (masterOutline != null) {
@@ -474,12 +480,27 @@ public class AiOutlineService {
             builder.append("简介：").append(truncate(novel.getIntro(), 800)).append("\n");
         }
 
-        builder.append("\n【世界观与背景】（不可违背的硬设定：规则、代价、时代、地理、组织）\n");
-        appendSetting(builder, detail, "WORLDVIEW", "世界观", 1600);
-        appendSetting(builder, detail, "BACKGROUND", "背景", 1200);
-        appendSetting(builder, detail, "CORE_CONFLICT", "核心冲突", 600);
-        appendSetting(builder, detail, "HIGHLIGHT", "核心看点", 500);
-        appendSetting(builder, detail, "STYLE", "文风基调", 300);
+        boolean anySetting = PromptVars.emit(used, "worldview") || PromptVars.emit(used, "background")
+                || PromptVars.emit(used, "coreConflict") || PromptVars.emit(used, "highlights")
+                || PromptVars.emit(used, "style");
+        if (anySetting) {
+            builder.append("\n【世界观与背景】（不可违背的硬设定：规则、代价、时代、地理、组织）\n");
+            if (PromptVars.emit(used, "worldview")) {
+                appendSetting(builder, detail, "WORLDVIEW", "世界观", 1600);
+            }
+            if (PromptVars.emit(used, "background")) {
+                appendSetting(builder, detail, "BACKGROUND", "背景", 1200);
+            }
+            if (PromptVars.emit(used, "coreConflict")) {
+                appendSetting(builder, detail, "CORE_CONFLICT", "核心冲突", 600);
+            }
+            if (PromptVars.emit(used, "highlights")) {
+                appendSetting(builder, detail, "HIGHLIGHT", "核心看点", 500);
+            }
+            if (PromptVars.emit(used, "style")) {
+                appendSetting(builder, detail, "STYLE", "文风基调", 300);
+            }
+        }
 
         builder.append("\n【角色档案】（本章人物必须从这个名单里选，姓名逐字一致）\n");
         List<CharacterVO> characters = detail.getCharacters() == null ? List.of() : detail.getCharacters();
@@ -634,7 +655,10 @@ public class AiOutlineService {
                 ? request.getStartChapterNo()
                 : existing.stream().mapToInt(item -> item.chapterNo() == null ? 0 : item.chapterNo())
                 .max().orElse(0) + 1;
-        builder.append("\n【作者要求】\n").append(requirement).append("\n");
+        if (PromptVars.emit(used, "authorRequirement")) {
+            builder.append("\n【作者要求】\n").append(requirement).append("\n");
+        }
+        PromptVars.appendConstraint(builder, detail, used, 1200);
         builder.append("\n【本次任务】\n生成 ").append(count).append(" 章大纲，从第 ")
                 .append(startChapterNo).append(" 章开始；与已有章节自然衔接，不要重复已写过的事件。\n");
 

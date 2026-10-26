@@ -16,8 +16,12 @@ import java.util.Map;
  * 不出现的场景（如灵感对话、拆书改编）各有自己的维护入口或仍是系统内置常量，
  * 不会出现在提示词模板页，避免用户改了却不生效。</p>
  *
- * <p>已接入 13 个场景：正文、大纲、蓝图四段、角色、物品、事件、章节分析、状态同步、按分析修改、
- * 小说要素抽取。其中蓝图四段各自独立，既可以分别定制提示词，也允许在「场景绑定」里给不同段配不同模型。</p>
+ * <p>已接入 16 个场景：正文、大纲、蓝图四段、建书追问、角色、物品、事件、章节分析、状态同步、按分析修改、
+ * 封面、小说要素抽取。其中蓝图四段各自独立，既可以分别定制提示词，也允许在「场景绑定」里给不同段配不同模型。</p>
+ *
+ * <p>变量分两层：<b>表单变量</b>（书名、题材、创意等）只在该场景有值时才有内容；
+ * <b>上下文变量</b>（五类设定、创作约束、本章人物等）本来由代码拼在 user 消息里，
+ * 模板一旦引用，user 段里同名的那一块就不再输出，同一份信息不会发两遍。</p>
  *
  * <p>完整提示词 = 用户可编辑的指令段（入库）+ 锁定的输出格式契约（常量）。
  * 契约里只放「怎么输出」，创作纪律（去陈词、题材校准）属于指令段，用户可以改。</p>
@@ -53,33 +57,133 @@ public class PromptSceneRegistry {
                 """.formatted(shape);
     }
 
-    private static final List<PromptSceneSpec.PromptVariable> BODY_VARIABLES = List.of(
+    /**
+     * 创作约束：建书前 AI 追问、作者作答后落库的那几十个字。
+     *
+     * <p>它贯穿此后所有创作场景（蓝图、总纲、大纲、正文、角色、物品、事件），
+     * 是「这个作者到底要写什么」的唯一答案，因此变量名统一叫 {@code constraints}。</p>
+     */
+    private static final List<PromptSceneSpec.PromptVariable> CONSTRAINT_VARIABLES = List.of(
+            new PromptSceneSpec.PromptVariable("constraints", "创作约束",
+                    "主角设定：被逐出宗门的杂役，身上还背着师门旧案的嫌疑\n主角目标：找回失传的残卷，替师父翻案"));
+
+    /**
+     * 正文生成可用变量。
+     *
+     * <p>其中 {@code chapterSummary} 起到 {@code searchResults} 的是「上下文变量」：
+     * 它们本来由代码拼在 user 消息里，模板一旦引用，对应块就不再重复注入
+     * （见 {@code PromptTemplateService.usedVariables}）。</p>
+     */
+    private static final List<PromptSceneSpec.PromptVariable> BODY_VARIABLES = vars(List.of(
             new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
             new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"),
+            new PromptSceneSpec.PromptVariable("tags", "标签", "升级流、群像、旧书修复"),
+            new PromptSceneSpec.PromptVariable("synopsis", "作品简介", "一个旧书修复师在拆迁老宅里捡到一本会改字的账册，每改一个字，城里就有一个人消失"),
             new PromptSceneSpec.PromptVariable("chapterNo", "本章章号", "12"),
-            new PromptSceneSpec.PromptVariable("targetWords", "预计汉字数", "2500"));
+            new PromptSceneSpec.PromptVariable("chapterTitle", "本章标题", "雨夜的第七个电话"),
+            new PromptSceneSpec.PromptVariable("targetWords", "预计汉字数", "2500"),
+            new PromptSceneSpec.PromptVariable("chapterSummary", "本章大纲", "主角在暴雨夜接到第七通无声电话，追到拆迁区，撞见账册上被划掉的名字"),
+            new PromptSceneSpec.PromptVariable("worldview", "世界观", "灵气按「账」结算，欠账未还者会被逐出城，账册是唯一的凭证"),
+            new PromptSceneSpec.PromptVariable("background", "背景", "三十年前那场大火烧掉半座城，官方说是意外，老住户都不信"),
+            new PromptSceneSpec.PromptVariable("coreConflict", "核心冲突", "主角要查清父亲死因，唯一的线索握在仇家手里，动它就要先毁了自家招牌"),
+            new PromptSceneSpec.PromptVariable("highlights", "核心看点", "旧书改字、账册索命、拆迁队里的老江湖"),
+            new PromptSceneSpec.PromptVariable("style", "文风基调", "第三人称限知，冷硬短句，市井口语"),
+            new PromptSceneSpec.PromptVariable("characters", "本章参与人物", "沈砚（旧书修复师，欠账三笔，习惯用袖口擦手）、老周（拆迁队长，嘴上骂人，暗中递消息）"),
+            new PromptSceneSpec.PromptVariable("factions", "相关势力", "修缮行会（掌握全城账册，规矩大于人情）、拆迁办（只听上面的话，怕档案被翻）"),
+            new PromptSceneSpec.PromptVariable("items", "本章相关物品", "缺角的账册（封面烫金已磨平，末页有父亲的字）、铜柄裁纸刀（母亲留下的，刀口崩过）"),
+            new PromptSceneSpec.PromptVariable("events", "本章关联事件", "（2019 年）老周第一次见到账册上出现自己的名字"),
+            new PromptSceneSpec.PromptVariable("previousSummary", "前情摘要", "上一章主角答应替老周查账，代价是替修缮行会修一本禁书"),
+            new PromptSceneSpec.PromptVariable("authorRequirement", "作者要求", "这一章节奏要快，只写追查过程，不要插入回忆"),
+            new PromptSceneSpec.PromptVariable("searchResults", "联网检索资料", "旧式线装账册常用「鱼鳞装」，翻页时需从右向左")),
+            CONSTRAINT_VARIABLES);
 
-    private static final List<PromptSceneSpec.PromptVariable> OUTLINE_VARIABLES = List.of(
+    /**
+     * 五类设定：各创作场景通用。
+     *
+     * <p>模板引用其中一类，user 段里同名的那一段就不再注入——同一份设定不会发两遍。</p>
+     */
+    private static final List<PromptSceneSpec.PromptVariable> SETTING_VARIABLES = List.of(
+            new PromptSceneSpec.PromptVariable("worldview", "世界观", "灵气按「账」结算，欠账未还者会被逐出城"),
+            new PromptSceneSpec.PromptVariable("background", "背景", "三十年前那场大火烧掉半座城，官方说是意外"),
+            new PromptSceneSpec.PromptVariable("coreConflict", "核心冲突", "主角要查清父亲死因，唯一的线索握在仇家手里"),
+            new PromptSceneSpec.PromptVariable("highlights", "核心看点", "旧书改字、账册索命、拆迁队里的老江湖"),
+            new PromptSceneSpec.PromptVariable("style", "文风基调", "第三人称限知，冷硬短句，市井口语"));
+
+    /** 作品级字段：标签与简介 */
+    private static final List<PromptSceneSpec.PromptVariable> NOVEL_EXTRA_VARIABLES = List.of(
+            new PromptSceneSpec.PromptVariable("tags", "标签", "升级流、群像、旧书修复"),
+            new PromptSceneSpec.PromptVariable("synopsis", "作品简介", "一个旧书修复师在拆迁老宅里捡到一本会改字的账册"));
+
+    /** 作者在生成弹窗里填的要求：模板引用后，user 段的「作者要求」块不再重复 */
+    private static final List<PromptSceneSpec.PromptVariable> AUTHOR_VARIABLES = List.of(
+            new PromptSceneSpec.PromptVariable("authorRequirement", "作者要求", "这一章节奏要快，只写追查过程"));
+
+    private static final List<PromptSceneSpec.PromptVariable> OUTLINE_VARIABLES = vars(
+            List.of(new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
+                    new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"),
+                    new PromptSceneSpec.PromptVariable("chapterCount", "本次生成章数", "5")),
+            NOVEL_EXTRA_VARIABLES, SETTING_VARIABLES, AUTHOR_VARIABLES, CONSTRAINT_VARIABLES);
+
+    private static final List<PromptSceneSpec.PromptVariable> MASTER_OUTLINE_VARIABLES = vars(
+            List.of(new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
+                    new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"),
+                    new PromptSceneSpec.PromptVariable("count", "本次生成条数", "4"),
+                    new PromptSceneSpec.PromptVariable("coverage", "覆盖范围", "全书主线")),
+            NOVEL_EXTRA_VARIABLES, SETTING_VARIABLES, AUTHOR_VARIABLES, CONSTRAINT_VARIABLES);
+
+    /**
+     * 蓝图四段：书名题材可能还没定，渲染时缺省为「这本书 / 通用」。
+     *
+     * <p>{@code idea/style/targetLength/protagonistHint} 就是建书表单里填的内容；
+     * {@code worldview/background/synopsis} 是前面几段已经生成的结果，供后续段引用；
+     * {@code constraints} 是建书前追问得到、随请求一起传进来的创作约束。</p>
+     */
+    private static final List<PromptSceneSpec.PromptVariable> BLUEPRINT_VARIABLES = vars(List.of(
             new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
             new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"),
-            new PromptSceneSpec.PromptVariable("chapterCount", "本次生成章数", "5"));
+            new PromptSceneSpec.PromptVariable("tags", "标签", "升级流、群像"),
+            new PromptSceneSpec.PromptVariable("idea", "核心创意", "一个被宗门逐出的废柴，靠一本会说话的旧书重新踏上修行路"),
+            new PromptSceneSpec.PromptVariable("style", "风格偏好", "热血爽文，节奏快"),
+            new PromptSceneSpec.PromptVariable("targetLength", "目标篇幅", "长篇 120 万字"),
+            new PromptSceneSpec.PromptVariable("protagonistHint", "主角偏好", "主角是女性，偏冷静克制"),
+            new PromptSceneSpec.PromptVariable("worldview", "已生成的世界观", "前一段产出的世界观全文"),
+            new PromptSceneSpec.PromptVariable("background", "已生成的背景", "前一段产出的背景历史"),
+            new PromptSceneSpec.PromptVariable("synopsis", "已生成的简介", "已确定的简介文本")),
+            CONSTRAINT_VARIABLES);
 
-    private static final List<PromptSceneSpec.PromptVariable> MASTER_OUTLINE_VARIABLES = List.of(
+    /** 建书前的信息追问：只拿得到表单里填的那几项 */
+    private static final List<PromptSceneSpec.PromptVariable> QUESTION_VARIABLES = List.of(
             new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
             new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"),
-            new PromptSceneSpec.PromptVariable("count", "本次生成条数", "4"),
-            new PromptSceneSpec.PromptVariable("coverage", "覆盖范围", "全书主线"));
+            new PromptSceneSpec.PromptVariable("tags", "标签", "升级流、群像"),
+            new PromptSceneSpec.PromptVariable("idea", "核心创意", "一个被宗门逐出的废柴，靠一本会说话的旧书重新踏上修行路"),
+            new PromptSceneSpec.PromptVariable("style", "风格偏好", "热血爽文，节奏快"),
+            new PromptSceneSpec.PromptVariable("targetLength", "目标篇幅", "长篇 120 万字"),
+            new PromptSceneSpec.PromptVariable("protagonistHint", "主角偏好", "主角是女性，偏冷静克制"));
 
-    /** 蓝图四段：书名与题材可能还没定，实际渲染时缺省为「这本书 / 通用」 */
-    private static final List<PromptSceneSpec.PromptVariable> BLUEPRINT_VARIABLES = List.of(
-            new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
-            new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"));
+    /** 角色 / 物品 / 势力：书名、题材、本次数量，外加作品字段、设定与作者要求 */
+    private static final List<PromptSceneSpec.PromptVariable> ASSET_VARIABLES = vars(
+            List.of(new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
+                    new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"),
+                    new PromptSceneSpec.PromptVariable("count", "本次生成数量", "3")),
+            NOVEL_EXTRA_VARIABLES, SETTING_VARIABLES, AUTHOR_VARIABLES, CONSTRAINT_VARIABLES);
 
-    /** 角色 / 物品 / 事件：都能拿到书名、题材与本次数量 */
-    private static final List<PromptSceneSpec.PromptVariable> ASSET_VARIABLES = List.of(
-            new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
-            new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"),
-            new PromptSceneSpec.PromptVariable("count", "本次生成数量", "3"));
+    /** 事件补货只拿得到作品信息（这个服务不加载设定详情，所以不登记设定变量） */
+    private static final List<PromptSceneSpec.PromptVariable> EVENT_VARIABLES = vars(
+            List.of(new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
+                    new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"),
+                    new PromptSceneSpec.PromptVariable("count", "本次生成数量", "3")),
+            NOVEL_EXTRA_VARIABLES, AUTHOR_VARIABLES, CONSTRAINT_VARIABLES);
+
+    @SafeVarargs
+    private static List<PromptSceneSpec.PromptVariable> vars(
+            List<PromptSceneSpec.PromptVariable>... parts) {
+        List<PromptSceneSpec.PromptVariable> result = new ArrayList<>();
+        for (List<PromptSceneSpec.PromptVariable> part : parts) {
+            result.addAll(part);
+        }
+        return List.copyOf(result);
+    }
 
     private static final List<PromptSceneSpec.PromptVariable> ANALYSIS_VARIABLES = List.of(
             new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
@@ -112,7 +216,7 @@ public class PromptSceneRegistry {
                 文中人物、物品、势力必须与给定的设定一致：名字不改、能力不越界、归属不搞错。
                 不要替读者总结情绪，把情绪落到动作、物件与对话上；不要写「命运的齿轮」「空气仿佛凝固」这类句子。
                 """, TEXT_CONTRACT_LOCKED, BODY_VARIABLES,
-                "正文生成：这只影响「怎么写」，输出仍是纯文本正文，格式由系统锁定。");
+                "正文生成：这只影响「怎么写」，输出仍是纯文本正文，格式由系统锁定。模板里引用世界观、作者要求这类上下文变量后，user 消息里同名段落不再重复注入。");
 
         register(AiScene.OUTLINE_GEN, """
                 你是经验丰富的小说编剧兼大纲策划，擅长把设定拆成有因果、有钩子、可直接开写的章节。
@@ -121,7 +225,7 @@ public class PromptSceneRegistry {
                 这次为《{{novelTitle}}》（{{genre}}）生成 {{chapterCount}} 章大纲。
                 不要写「xxx与xxx」式的对称标题；每章都要留下一个能勾住下一章的问题。
                 """, JSON_CONTRACT_LOCKED, OUTLINE_VARIABLES,
-                "大纲生成：控制章节安排的思路与口吻，JSON 字段由系统锁定。");
+                "大纲生成：控制章节安排的思路与口吻，JSON 字段由系统锁定。模板里引用世界观、作者要求这类上下文变量后，user 消息里同名段落不再重复注入。");
 
         register(AiScene.MASTER_OUTLINE, """
                 你是资深小说总策划，负责在写任何章节之前，先把整本书的剧情走向拆成若干「总纲」。
@@ -139,7 +243,7 @@ public class PromptSceneRegistry {
                 jsonContract("""
                         {"outlines": [{"title": "这一段的核心事件", "content": "200~400 字：开局局面 → 主要矛盾 → 关键转折 → 结束时的结果"}]}"""),
                 MASTER_OUTLINE_VARIABLES,
-                "总纲生成：决定全书剧情如何分段推进，JSON 字段由系统锁定。");
+                "总纲生成：决定全书剧情如何分段推进，JSON 字段由系统锁定。模板里引用世界观、作者要求这类上下文变量后，user 消息里同名段落不再重复注入。");
 
         // ---------------- 蓝图四段 ----------------
 
@@ -160,7 +264,7 @@ public class PromptSceneRegistry {
                 jsonContract("""
                         {"worldview": "600~900 字：核心规则 → 代价与边界 → 社会结构 → 势力格局 → 3 个日常细节 → 当前暗流"}"""),
                 BLUEPRINT_VARIABLES,
-                "蓝图第一段：只产出世界观，后续三段会基于它继续推演。");
+                "蓝图第一段：只产出世界观，后续三段会基于它继续推演。引用表单字段与前段结果后，user 段同名内容不再重复。");
 
         register(AiScene.BLUEPRINT_BACKGROUND, """
                 你是资深小说策划，负责把世界观落到具体历史与当下局势。
@@ -251,6 +355,34 @@ public class PromptSceneRegistry {
                 BLUEPRINT_VARIABLES,
                 "蓝图第四段：产出主角与配角档案，关系在写书后另行生成。");
 
+        // ---------------- 建书前的信息追问 ----------------
+
+        register(AiScene.BLUEPRINT_QUESTIONS, """
+                你是{{genre}}小说的策划编辑。作者刚给了一个创意，你要在动笔设计设定之前，判断他还缺哪些关键信息。
+                核心创意：{{idea}}
+                风格偏好：{{style}}
+                目标篇幅：{{targetLength}}
+                主角偏好：{{protagonistHint}}
+
+                【问什么】
+                1. 只问「不问就没法往下设计」的信息；创意里已经写清的方向，一律不要重复问。
+                2. 问题必须落到具体选择上，让作者一句话就能答完，不要问「你想要什么样的世界观」这种大题。
+                3. 优先问会改变剧情走向的：主角的起点、真正的欲望、谁在挡路、规则怎么运转、开局从哪一天写起。
+                4. 最多 4 个问题；确实不缺信息就给空数组，不要为了凑数硬问。
+                5. 每个问题配一句示例答案（hint），让作者知道该写到什么颗粒度。
+
+                【key 只能取下列固定值】
+                protagonist 主角身份与起点 / goal 主角的目标与动机 / antagonist 主要对手与压力
+                power 力量或规则体系 / world 世界舞台与地理 / opening 开局场景
+                ending 结局倾向 / tone 情绪基调与爽点 / taboo 禁区与不要出现的内容
+                """,
+                jsonContract("""
+                        {"questions": [{"key": "protagonist", "question": "主角出场时是什么身份？已经被逼到什么份上了？", "hint": "如：被逐出宗门的杂役，背着师门旧案的嫌疑，靠替人抄经混饭"}]}
+                        questions 给 0~4 个；key 必须是上面列出的固定值，不得自创；同一个方向只问一次。"""),
+                QUESTION_VARIABLES,
+                "建书前的信息追问：AI 判断你的创意还缺哪些关键信息，问清后作为「创作约束」注入此后所有创作场景。"
+                        + "这里只决定怎么问，输出格式由系统锁定。");
+
         // ---------------- 角色 / 物品 / 事件 ----------------
 
         register(AiScene.CHARACTER_BUILD, """
@@ -260,7 +392,7 @@ public class PromptSceneRegistry {
                 不要写「天赋异禀」「深不可测」「倾国倾城」这类标签；能力要写边界与代价，人物要写欲望与缺陷。
                 每个角色都要能在故事里制造麻烦：有想要的东西，也有不肯让的东西。
                 """, JSON_CONTRACT_LOCKED, ASSET_VARIABLES,
-                "角色生成：控制角色的设计取向，JSON 字段由系统锁定。");
+                "角色生成：控制角色的设计取向，JSON 字段由系统锁定。模板里引用世界观、作者要求这类上下文变量后，user 消息里同名段落不再重复注入。");
 
         register(AiScene.ITEM_BUILD, """
                 你是资深网络小说设定师，擅长设计能推动剧情的物品、线索与信物。
@@ -269,15 +401,15 @@ public class PromptSceneRegistry {
                 origin 是「说明」（来历、经手人、关联的关键事件或秘密）。两部分内容不得重复。
                 物品要能带出故事：持有它的人会因此得到什么、失去什么。
                 """, JSON_CONTRACT_LOCKED, ASSET_VARIABLES,
-                "物品生成：控制物品的设计取向，JSON 字段由系统锁定。");
+                "物品生成：控制物品的设计取向，JSON 字段由系统锁定。模板里引用世界观、作者要求这类上下文变量后，user 消息里同名段落不再重复注入。");
 
         register(AiScene.EVENT_SUPPLY, """
                 你是资深剧情策划，负责设计能被直接写进正文的事件，而不是一句话梗概。
                 这次为《{{novelTitle}}》（{{genre}}）补充 {{count}} 个事件，要能接上现有角色与事件池里的前因。
                 每个事件都必须有目标、阻碍、转折、代价与钩子；参与角色必须有各自立场，不能只是站桩。
                 不要用「突然」「竟然」「原来」当转折；转折必须有前文铺垫。
-                """, JSON_CONTRACT_LOCKED, ASSET_VARIABLES,
-                "事件补货：控制事件的设计取向，JSON 字段由系统锁定。");
+                """, JSON_CONTRACT_LOCKED, EVENT_VARIABLES,
+                "事件补货：控制事件的设计取向，JSON 字段由系统锁定。模板里引用世界观、作者要求这类上下文变量后，user 消息里同名段落不再重复注入。");
 
         // ---------------- 分析与质检 ----------------
 
