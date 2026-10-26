@@ -48,7 +48,8 @@
                   <el-dropdown-item command="open">打开工作台</el-dropdown-item>
                   <el-dropdown-item command="write">大纲与正文</el-dropdown-item>
                   <el-dropdown-item command="cover" divided>生成封面</el-dropdown-item>
-                  <el-dropdown-item command="export">导出 JSON</el-dropdown-item>
+                  <el-dropdown-item command="export">导出 JSON（备份）</el-dropdown-item>
+                  <el-dropdown-item command="export-txt">导出 TXT（投稿）</el-dropdown-item>
                   <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -315,6 +316,7 @@ import {
   deleteNovel,
   emptyBlueprint,
   exportNovel,
+  exportNovelTxt,
   getBlueprintTask,
   importNovel,
   normalizeBlueprint,
@@ -484,6 +486,10 @@ function onCardCommand(command: string, book: NovelVO) {
     void exportBook(book)
     return
   }
+  if (command === 'export-txt') {
+    void exportBookTxt(book)
+    return
+  }
   if (command === 'delete') {
     void removeBook(book)
   }
@@ -496,24 +502,38 @@ const importInputRef = ref<HTMLInputElement | null>(null)
 async function exportBook(book: NovelVO) {
   try {
     const blob = await exportNovel(book.id)
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `${book.title || 'novel'}-export.json`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
+    saveBlob(blob, `${book.title || 'novel'}-export.json`)
     ElMessage.success('已导出 JSON')
   } catch (error) {
     ElMessage.error((error as Error).message || '导出失败')
   }
 }
 
+async function exportBookTxt(book: NovelVO) {
+  try {
+    const blob = await exportNovelTxt(book.id, { scope: 'all' })
+    saveBlob(blob, `${book.title || 'novel'}.txt`)
+    ElMessage.success('已导出 TXT')
+  } catch (error) {
+    ElMessage.error((error as Error).message || '导出失败')
+  }
+}
+
+/** 统一的浏览器下载，Blob 用完即释放。 */
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
 function pickImportFile() {
   importInputRef.value?.click()
 }
-
 async function onImportFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]

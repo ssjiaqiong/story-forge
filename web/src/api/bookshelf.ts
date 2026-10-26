@@ -171,6 +171,31 @@ export function importNovel(pkg: unknown) {
   return api.post<NovelVO>('/bookshelf/novels/import', pkg, 300000)
 }
 
+/** TXT 导出选项 */
+export interface TxtExportOptions {
+  /** all 全书 / volume 指定卷 / range 章节号闭区间 */
+  scope?: 'all' | 'volume' | 'range'
+  volumeNo?: number
+  from?: number
+  to?: number
+  /** 是否写 UTF-8 BOM，默认 true */
+  bom?: boolean
+  /** 无正文章节是否保留标题行，默认 false */
+  includeEmpty?: boolean
+  /** 是否输出卷名分节行，默认 true */
+  withVolume?: boolean
+}
+
+/** 导出正文为 TXT：只有卷名、章节标题与正文，可直接投稿或发平台 */
+export async function exportNovelTxt(id: string, options: TxtExportOptions = {}): Promise<Blob> {
+  const response = await http.get<Blob>(`/bookshelf/novels/${id}/export/txt`, {
+    params: options,
+    responseType: 'blob',
+    timeout: 300000
+  })
+  return response.data
+}
+
 /** 空角色原型 */
 export function emptyCharacter(rolePos = 'SUPPORTING'): CharacterDraft {
   return {

@@ -13,10 +13,12 @@ import com.storyforge.modules.bookshelf.dto.NovelCreateRequest;
 import com.storyforge.modules.bookshelf.dto.NovelDetailVO;
 import com.storyforge.modules.bookshelf.dto.NovelEditRequest;
 import com.storyforge.modules.bookshelf.dto.NovelExportPackage;
+import com.storyforge.modules.bookshelf.dto.TxtExportOptions;
 import com.storyforge.modules.bookshelf.service.BlueprintQuestionService;
 import com.storyforge.modules.bookshelf.service.BlueprintTaskService;
 import com.storyforge.modules.bookshelf.service.BookshelfService;
 import com.storyforge.modules.bookshelf.service.NovelTransferService;
+import com.storyforge.modules.bookshelf.service.NovelTxtExportService;
 import com.storyforge.modules.novel.dto.NovelVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
@@ -33,6 +35,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URLEncoder;
@@ -53,6 +56,7 @@ public class BookshelfController {
     private final BlueprintTaskService blueprintTaskService;
     private final BlueprintQuestionService blueprintQuestionService;
     private final NovelTransferService novelTransferService;
+    private final NovelTxtExportService novelTxtExportService;
     private final ObjectMapper objectMapper;
 
     @Operation(summary = "建书前的信息追问",
@@ -143,6 +147,42 @@ public class BookshelfController {
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "attachment; filename=\"" + asciiName + "\"; filename*=UTF-8''" + encodedName)
                 .contentType(MediaType.APPLICATION_JSON)
+                .body(body);
+    }
+
+    @Operation(summary = "导出小说正文为 TXT",
+            description = "给读者/投稿平台看的成品格式：只有卷名、章节标题与正文，"
+                    + "不含设定、大纲摘要与任何 ID。可按全书、指定卷或章节区间导出，默认写 UTF-8 BOM")
+    @GetMapping("/novels/{id}/export/txt")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 30, windowSeconds = 60)
+    public ResponseEntity<byte[]> exportTxt(@PathVariable Long id,
+                                            @RequestParam(defaultValue = "all") String scope,
+                                            @RequestParam(required = false) Integer volumeNo,
+                                            @RequestParam(required = false) Integer from,
+                                            @RequestParam(required = false) Integer to,
+                                            @RequestParam(defaultValue = "true") boolean bom,
+                                            @RequestParam(defaultValue = "false") boolean includeEmpty,
+                                            @RequestParam(defaultValue = "true") boolean withVolume) {
+        TxtExportOptions options = new TxtExportOptions();
+        options.setScope(scope);
+        options.setVolumeNo(volumeNo);
+        options.setFrom(from);
+        options.setTo(to);
+        options.setBom(bom);
+        options.setIncludeEmpty(includeEmpty);
+        options.setWithVolume(withVolume);
+
+        NovelTxtExportService.TxtFile file = novelTxtExportService.exportTxt(id, options);
+        byte[] body = file.text().getBytes(StandardCharsets.UTF_8);
+
+        String title = file.title() == null ? "novel" : file.title();
+        String asciiName = "novel-" + id + "-export.txt";
+        String encodedName = URLEncoder.encode(safeFilename(title) + ".txt", StandardCharsets.UTF_8)
+                .replace("+", "%20");
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"" + asciiName + "\"; filename*=UTF-8''" + encodedName)
+                .contentType(MediaType.parseMediaType("text/plain; charset=utf-8"))
                 .body(body);
     }
 

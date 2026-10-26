@@ -18,6 +18,7 @@
 
       <div class="wb-side-foot">
         <el-button text :icon="ChatDotRound" @click="agentOpen = true">智能助手</el-button>
+        <el-button text :icon="Download" @click="openExportDialog">导出 TXT</el-button>
         <el-button text :icon="ArrowLeft" @click="goBookshelf">返回书架</el-button>
       </div>
     </aside>
@@ -1979,6 +1980,45 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="exportDialog.visible" title="导出 TXT" width="540px">
+      <p class="export-hint">
+        只导出卷名、章节标题与正文，可直接投稿或发到网文平台；设定与大纲摘要不会写进文件。
+      </p>
+      <el-form label-width="84px">
+        <el-form-item label="导出范围">
+          <el-radio-group v-model="exportDialog.scope">
+            <el-radio-button value="all">全书</el-radio-button>
+            <el-radio-button value="volume">按卷</el-radio-button>
+            <el-radio-button value="range">章节区间</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="exportDialog.scope === 'volume'" label="选择卷">
+          <el-select v-model="exportDialog.volumeNo" placeholder="选择要导出的卷" style="width: 100%">
+            <el-option v-for="item in volumeOptions" :key="item.no" :label="item.label" :value="item.no" />
+          </el-select>
+        </el-form-item>
+        <template v-if="exportDialog.scope === 'range'">
+          <el-form-item label="起始章">
+            <el-input-number v-model="exportDialog.from" :min="1" :max="maxChapterNo" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="结束章">
+            <el-input-number v-model="exportDialog.to" :min="1" :max="maxChapterNo" controls-position="right" />
+          </el-form-item>
+        </template>
+        <el-form-item label="选项">
+          <div class="export-switches">
+            <el-checkbox v-model="exportDialog.bom">写入 UTF-8 BOM（Windows 记事本与多数平台靠它识别编码）</el-checkbox>
+            <el-checkbox v-model="exportDialog.withVolume">输出卷名分节行</el-checkbox>
+            <el-checkbox v-model="exportDialog.includeEmpty">保留无正文章节的标题行</el-checkbox>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="exportDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="exporting" @click="submitExport">导出</el-button>
+      </template>
+    </el-dialog>
+
     <ChangeHistoryDrawer ref="historyDrawer" :novel-id="novelId" />
     <ChapterReviseDialog
       v-model="reviseVisible"
@@ -2001,8 +2041,9 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Calendar, ChatDotRound, Collection, Connection, DataAnalysis, Document, EditPen, Files, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User } from '@element-plus/icons-vue'
+import { ArrowLeft, Calendar, ChatDotRound, Collection, Connection, DataAnalysis, Document, Download, EditPen, Files, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User } from '@element-plus/icons-vue'
 import {
+  exportNovelTxt,
   getNovelDetail,
   updateNovel,
   normalizeBlueprint,
@@ -3349,6 +3390,82 @@ function goBookshelf() {
   router.push('/bookshelf')
 }
 
+/* ---------- 导出 TXT ---------- */
+const exporting = ref(false)
+const exportDialog = reactive({
+  visible: false,
+  scope: 'all' as 'all' | 'volume' | 'range',
+  volumeNo: 1,
+  from: 1,
+  to: 1,
+  bom: true,
+  withVolume: true,
+  includeEmpty: false
+})
+
+/** 卷下拉项：按 volumeNo 去重，卷名缺失时退化成「第 N 卷」。 */
+const volumeOptions = computed(() => {
+  const seen = new Map<number, string>()
+  for (const chapter of chapters.value) {
+    const no = chapter.volumeNo || 1
+    if (!seen.has(no)) {
+      seen.set(no, chapter.volumeTitle?.trim() || `第 ${no} 卷`)
+    }
+  }
+  return [...seen.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([no, label]) => ({ no, label }))
+})
+
+const maxChapterNo = computed(() =>
+  chapters.value.reduce((max, item) => Math.max(max, item.chapterNo || 0), 1)
+)
+
+function openExportDialog() {
+  if (!chapters.value.length) {
+    ElMessage.warning('这本书还没有章节，先写点内容再导出')
+    return
+  }
+  exportDialog.scope = 'all'
+  exportDialog.volumeNo = volumeOptions.value[0]?.no ?? 1
+  exportDialog.from = 1
+  exportDialog.to = maxChapterNo.value
+  exportDialog.visible = true
+}
+
+async function submitExport() {
+  if (exportDialog.scope === 'range' && exportDialog.from > exportDialog.to) {
+    ElMessage.warning('起始章不能大于结束章')
+    return
+  }
+  exporting.value = true
+  try {
+    const blob = await exportNovelTxt(novelId.value, {
+      scope: exportDialog.scope,
+      volumeNo: exportDialog.scope === 'volume' ? exportDialog.volumeNo : undefined,
+      from: exportDialog.scope === 'range' ? exportDialog.from : undefined,
+      to: exportDialog.scope === 'range' ? exportDialog.to : undefined,
+      bom: exportDialog.bom,
+      withVolume: exportDialog.withVolume,
+      includeEmpty: exportDialog.includeEmpty
+    })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${novel.value?.title || 'novel'}.txt`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    exportDialog.visible = false
+    ElMessage.success('已导出 TXT')
+  } catch (error) {
+    ElMessage.error((error as Error).message || '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
+
 /* ---------- 基本信息 ---------- */
 async function saveBasic() {
   if (!basic.title.trim()) {
@@ -4340,6 +4457,24 @@ function roleType(value?: string) {
   margin-top: auto;
   padding-top: 12px;
   border-top: 1px solid var(--sf-border, #ebeef5);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.export-hint {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--sf-text-secondary, #909399);
+}
+
+.export-switches {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.6;
 }
 
 .wb-main {
