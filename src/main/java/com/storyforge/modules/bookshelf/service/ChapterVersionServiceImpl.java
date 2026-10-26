@@ -125,6 +125,16 @@ public class ChapterVersionServiceImpl implements ChapterVersionService {
     }
 
     @Override
+    public LocalDateTime latestAutoAt(Long chapterId) {
+        List<ChapterVersionEntity> rows = versionMapper.selectList(Wrappers.<ChapterVersionEntity>lambdaQuery()
+                .eq(ChapterVersionEntity::getChapterId, chapterId)
+                .eq(ChapterVersionEntity::getSource, ChapterVersionEntity.SOURCE_AUTO)
+                .orderByDesc(ChapterVersionEntity::getVersionNo)
+                .last("limit 1"));
+        return rows.isEmpty() ? null : rows.get(0).getCreatedAt();
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteByChapter(Long chapterId) {
         versionMapper.delete(Wrappers.<ChapterVersionEntity>lambdaQuery()

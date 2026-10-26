@@ -22,6 +22,8 @@ public record ChapterVO(
         String content,
         Integer wordCount,
         String status,
+        @Schema(description = "乐观锁版本号，自动保存回传它用于检测多端冲突")
+        Integer version,
         LocalDateTime updatedAt,
         Long novelId,
         List<EventParticipantVO> participants,

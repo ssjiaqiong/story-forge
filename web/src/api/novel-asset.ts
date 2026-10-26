@@ -25,6 +25,8 @@ export interface ChapterVO {
   content?: string
   wordCount: number
   status: string
+  /** 乐观锁版本号：自动保存回传它用于检测「另一处已修改」 */
+  version?: number
   updatedAt?: string
   novelId?: string
   /** 本章参与人物 */
@@ -144,6 +146,16 @@ export function createChapter(novelId: string, payload: ChapterPayload) {
 
 export function updateChapter(id: string, payload: ChapterPayload) {
   return api.put<ChapterVO>(`/bookshelf/chapters/${id}`, payload, 30000)
+}
+
+/**
+ * 自动保存正文（轻量路径）：只改正文与字数，不动标题/状态/关联。
+ *
+ * @param version 客户端上次读到的版本号；带上它服务端会检测多端冲突（返回 40071）。
+ *                传 null 表示强制覆盖（用户在冲突弹窗里选了「用我的覆盖」）。
+ */
+export function saveChapterContent(id: string, content: string, version?: number | null) {
+  return api.patch<ChapterVO>(`/bookshelf/chapters/${id}/content`, { content, version }, 30000)
 }
 
 export function deleteChapter(id: string) {

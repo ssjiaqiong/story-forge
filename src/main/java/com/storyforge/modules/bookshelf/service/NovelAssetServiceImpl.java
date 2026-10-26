@@ -52,7 +52,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Value;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -95,6 +98,10 @@ public class NovelAssetServiceImpl implements NovelAssetService {
 
     /** 章节「已完成」状态：正文定稿，不允许再改正文与标题 */
     private static final String CHAPTER_STATUS_DONE = "DONE";
+
+    /** 自动保存写快照的最小间隔（分钟）；0 表示每次都写。见 shouldSnapshotAuto。 */
+    @Value("${storyforge.version.auto-snapshot-minutes:30}")
+    private int autoSnapshotMinutes;
 
     /** 树节点排序：主角优先，其次反派、配角、龙套。 */
     private static final Map<String, Integer> ROLE_PRIORITY = Map.of(
@@ -198,6 +205,68 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Transactional(rollbackFor = Exception.class)
     public ChapterVO updateChapter(Long chapterId, ChapterRequest request, String source) {
         return updateChapter(chapterId, request, source, false, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ChapterVO saveContent(Long chapterId, String content, Integer version) {
+        ChapterEntity entity = requireChapter(chapterId);
+        // 已定稿的章节正文锁定：自动保存不享有例外，前端本该不给编辑入口，这里再兜一次
+        if (CHAPTER_STATUS_DONE.equals(entity.getStatus())) {
+            throw BizException.of(ErrorCode.CHAPTER_LOCKED);
+        }
+        // 多端冲突：客户端带回来的版本号与库里不一致，说明别处已经改过
+        if (version != null && !version.equals(entity.getVersion())) {
+            throw BizException.of(ErrorCode.CHAPTER_CONFLICT);
+        }
+        String newContent = content == null ? "" : content.trim();
+        String oldContent = nullToEmpty(entity.getContent());
+        if (newContent.equals(oldContent)) {
+            // 内容没变（例如停止输入后防抖又触发一次）——不写库、不存快照、不动字数
+            return getChapter(chapterId);
+        }
+        Integer oldWordCount = entity.getWordCount();
+        int newWordCount = countWords(newContent);
+        // 只有正文在变，快照存「保存前」的旧稿；节流：距上一版 AUTO 不足设定分钟就跳过，
+        // 否则一章编辑十分钟能刷出几十条版本
+        if (shouldSnapshotAuto(chapterId)) {
+            chapterVersionService.snapshot(
+                    beforeSnapshot(entity, entity.getTitle(), oldContent, oldWordCount),
+                    ChapterVersionEntity.SOURCE_AUTO, null);
+        }
+        entity.setContent(newContent);
+        entity.setWordCount(newWordCount);
+        int affected = chapterMapper.updateById(entity);
+        // 乐观锁撞车（并发到同一行）：updateById 影响 0 行
+        if (affected == 0) {
+            throw BizException.of(ErrorCode.CHAPTER_CONFLICT);
+        }
+        // 增量修正全书字数：自动保存每次重算全书聚合太贵（500 章的书每秒都在算）
+        int delta = newWordCount - (oldWordCount == null ? 0 : oldWordCount);
+        if (delta != 0) {
+            novelMapper.update(null, Wrappers.<NovelEntity>lambdaUpdate()
+                    .eq(NovelEntity::getId, entity.getNovelId())
+                    .setSql("word_count = word_count + (" + delta + ")"));
+        }
+        return getChapter(chapterId);
+    }
+
+    /**
+     * 是否该为本次自动保存写快照。
+     *
+     * <p>节流窗口由 {@code storyforge.version.auto-snapshot-minutes} 控制（默认 30 分钟）：
+     * 同一段连续编辑最多半小时留一版，配合「AUTO 每章最多 5 条 + 7 天」的清理策略，
+     * 既能在崩溃后找回旧稿，又不会把版本列表刷爆。</p>
+     */
+    private boolean shouldSnapshotAuto(Long chapterId) {
+        if (autoSnapshotMinutes <= 0) {
+            return true;
+        }
+        LocalDateTime latest = chapterVersionService.latestAutoAt(chapterId);
+        if (latest == null) {
+            return true;
+        }
+        return Duration.between(latest, LocalDateTime.now()).toMinutes() >= autoSnapshotMinutes;
     }
 
     @Override
@@ -1183,6 +1252,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
                 withContent ? entity.getContent() : null,
                 entity.getWordCount(),
                 entity.getStatus(),
+                entity.getVersion(),
                 entity.getUpdatedAt(),
                 entity.getNovelId(),
                 participants.getOrDefault(entity.getId(), List.of()),

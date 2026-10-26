@@ -756,6 +756,13 @@
                   >
                     <el-option v-for="item in CHAPTER_STATUS" :key="item.value" :label="item.label" :value="item.value" />
                   </el-select>
+                  <span v-if="contentEditing" class="autosave-status" :class="'autosave-' + autoSaveState">
+                    <span v-if="autoSaveState === 'saving'" class="autosave-spinner" />
+                    <template v-if="autoSaveState === 'error'">
+                      <a class="autosave-retry" @click="retryAutoSave">自动保存失败，点此重试</a>
+                    </template>
+                    <template v-else>{{ autoSaveText }}</template>
+                  </span>
                   <span class="editor-words">{{ contentWords }} 字</span>
                   <template v-if="contentEditing">
                     <el-button size="small" :disabled="contentStreaming" @click="cancelContentEdit">取消</el-button>
@@ -2384,7 +2391,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Aim, ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, Edit, EditPen, Files, FirstAidKit, Loading, Lock, MagicStick, MoreFilled, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
@@ -2412,6 +2419,7 @@ import {
   type EntityType
 } from '@/api/analysis'
 import type { SearchBundleVO } from '@/api/search'
+import { ErrorCodes } from '@/api/request'
 import {
   addFactionMember as apiAddFactionMember,
   createFaction,
@@ -2468,6 +2476,7 @@ import {
   listMasterOutlines,
   listRelations,
   listTimeline,
+  saveChapterContent,
   updateChapter,
   updateCharacter,
   updateItem,
@@ -2679,6 +2688,318 @@ const contentDirty = computed(() => {
 /** 字数按汉字统计：标点、数字、字母不计 */
 const contentWords = computed(() => (contentDraft.value.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || []).length)
 
+/* ---------- 正文自动保存 ---------- */
+/**
+ * 编辑态下把正文静默写库（PATCH /chapters/{id}/content），只动正文与字数。
+ * 策略：停止输入 1.5s 触发；连续输入最长 20s 必存一次；单飞 + dirty 补发；
+ * 失败留在「保存失败」并可重试；多端冲突弹窗让用户选「用我的覆盖 / 放弃」。
+ */
+type AutoSaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'conflict'
+const autoSaveState = ref<AutoSaveState>('idle')
+const autoSaveAt = ref('')
+const autoSaveError = ref('')
+/** 顶部状态文案 */
+const autoSaveText = computed(() => {
+  switch (autoSaveState.value) {
+    case 'saving':
+      return '保存中…'
+    case 'saved':
+      return autoSaveAt.value ? `已自动保存 ${autoSaveAt.value}` : '已自动保存'
+    case 'pending':
+      return '待保存…'
+    case 'conflict':
+      return '有冲突待处理'
+    case 'error':
+      return autoSaveError.value || '自动保存失败'
+    default:
+      return ''
+  }
+})
+const autoSaveDebounceMs = 1500
+const autoSaveMaxWaitMs = 20000
+/** 上一次成功写进库的正文，用来判断「是否真的变了」，也是取消编辑的还原点 */
+let autoSaveBaseline = ''
+let autoSaveChapterId = ''
+let autoSaveDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let autoSaveMaxTimer: ReturnType<typeof setTimeout> | null = null
+let autoSaveInFlight = false
+let autoSaveQueued = false
+/** 正在飞的自动保存请求，显式保存前先等它落地，免得两条写过同一行 */
+let autoSavePending: Promise<void> | null = null
+
+/** 本地草稿兜底：崩溃 / 关页后还找得回没落库的正文 */
+function localDraftKey(chapterId: string) {
+  return `storyforge.content.draft.${chapterId}`
+}
+function readLocalDraft(chapterId: string): string {
+  try {
+    return localStorage.getItem(localDraftKey(chapterId)) || ''
+  } catch {
+    return ''
+  }
+}
+function writeLocalDraft(chapterId: string, text: string) {
+  try {
+    if (text) {
+      localStorage.setItem(localDraftKey(chapterId), text)
+    } else {
+      localStorage.removeItem(localDraftKey(chapterId))
+    }
+  } catch {
+    /* 隐私模式下 localStorage 可能不可用，静默忽略 */
+  }
+}
+function clearLocalDraft(chapterId: string) {
+  try {
+    localStorage.removeItem(localDraftKey(chapterId))
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearAutoSaveTimers() {
+  if (autoSaveDebounceTimer) {
+    clearTimeout(autoSaveDebounceTimer)
+    autoSaveDebounceTimer = null
+  }
+  if (autoSaveMaxTimer) {
+    clearTimeout(autoSaveMaxTimer)
+    autoSaveMaxTimer = null
+  }
+}
+
+/** 切章 / 进出编辑态 / 显式保存后调用：清计时器与进行中标记，避免串章 */
+function resetAutoSave() {
+  clearAutoSaveTimers()
+  autoSaveInFlight = false
+  autoSaveQueued = false
+  autoSaveBaseline = ''
+  autoSaveChapterId = ''
+  autoSaveState.value = 'idle'
+  autoSaveError.value = ''
+}
+
+/** 自动保存是否该被按下暂停：AI 推流中、改稿弹窗打开时先别抢写 */
+function autoSavePaused() {
+  return contentStreaming.value || reviseVisible.value || aiContentGenerating.value
+}
+
+function scheduleAutoSave() {
+  if (autoSaveState.value === 'conflict') {
+    return
+  }
+  autoSaveState.value = 'pending'
+  if (autoSaveDebounceTimer) {
+    clearTimeout(autoSaveDebounceTimer)
+  }
+  autoSaveDebounceTimer = setTimeout(() => {
+    void runAutoSave()
+  }, autoSaveDebounceMs)
+  // 上限计时：连续打字时防止一直不落库
+  if (!autoSaveMaxTimer) {
+    autoSaveMaxTimer = setTimeout(() => {
+      void runAutoSave()
+    }, autoSaveMaxWaitMs)
+  }
+}
+
+/** 正文变化入口（watch 调用）：只有编辑态、有正文变化时才安排保存 */
+function onContentDraftChanged() {
+  if (!contentEditing.value || contentLocked.value) {
+    return
+  }
+  const id = activeChapterId.value
+  if (!id) {
+    return
+  }
+  // 无论是否要保存，都先落到本地草稿，防崩溃丢字
+  writeLocalDraft(id, contentDraft.value)
+  if (contentDraft.value === autoSaveBaseline || autoSavePaused()) {
+    return
+  }
+  scheduleAutoSave()
+}
+
+function runAutoSave() {
+  if (autoSavePending) {
+    // 正在飞：记一笔，等它回来再补发，避免并发写同一行
+    autoSaveQueued = true
+    return
+  }
+  autoSavePending = doRunAutoSave().finally(() => {
+    autoSavePending = null
+    autoSaveInFlight = false
+    if (autoSaveState.value !== 'conflict'
+      && (autoSaveQueued || contentDraft.value !== autoSaveBaseline)) {
+      autoSaveQueued = false
+      scheduleAutoSave()
+    }
+  })
+}
+
+async function doRunAutoSave() {
+  clearAutoSaveTimers()
+  const id = activeChapterId.value
+  if (!id || !contentEditing.value || contentLocked.value || autoSavePaused() || autoSaveState.value === 'conflict') {
+    return
+  }
+  const text = contentDraft.value
+  if (text === autoSaveBaseline) {
+    autoSaveState.value = 'saved'
+    return
+  }
+  autoSaveInFlight = true
+  autoSaveState.value = 'saving'
+  try {
+    const saved = await saveChapterContent(id, text, editingChapter.value?.version ?? null)
+    autoSaveBaseline = text
+    autoSaveChapterId = id
+    if (editingChapter.value && activeChapterId.value === id) {
+      editingChapter.value = {
+        ...editingChapter.value,
+        content: text,
+        wordCount: saved.wordCount,
+        version: saved.version
+      }
+      // 列表角标字数同步（轻量，不重新拉全表）
+      const row = chapters.value.find((item) => item.id === id)
+      if (row) {
+        row.wordCount = saved.wordCount
+        row.version = saved.version
+      }
+    }
+    autoSaveAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    autoSaveError.value = ''
+    writeLocalDraft(id, text)
+    autoSaveState.value = contentDraft.value === text ? 'saved' : 'pending'
+  } catch (error) {
+    const err = error as { code?: number; message?: string }
+    if (err.code === ErrorCodes.CHAPTER_CONFLICT) {
+      autoSaveState.value = 'conflict'
+      await handleAutoSaveConflict(id)
+      return
+    }
+    autoSaveState.value = 'error'
+    autoSaveError.value = err.message || '自动保存失败'
+  }
+}
+
+/** 多端冲突：让用户决定用本地覆盖还是放弃本地取服务器版本 */
+async function handleAutoSaveConflict(chapterId: string) {
+  try {
+    await ElMessageBox.confirm(
+      '这一章在别处已经改过了。要用你当前编辑的内容覆盖服务器版本，还是放弃你的改动、载入最新版本？',
+      '发现冲突',
+      { type: 'warning', confirmButtonText: '用我的覆盖', cancelButtonText: '放弃我的改动', distinguishCancelAndClose: true }
+    )
+  } catch (action) {
+    if (action === 'cancel') {
+      await discardLocalAndReload(chapterId)
+      return
+    }
+    // 关掉弹窗：保持冲突态，等用户下次操作
+    return
+  }
+  // 用我的覆盖：不带 version 强制写库
+  const id = activeChapterId.value
+  if (!id) {
+    return
+  }
+  autoSaveInFlight = true
+  autoSaveState.value = 'saving'
+  try {
+    const saved = await saveChapterContent(id, contentDraft.value, null)
+    autoSaveBaseline = contentDraft.value
+    if (editingChapter.value && activeChapterId.value === id) {
+      editingChapter.value = {
+        ...editingChapter.value,
+        content: contentDraft.value,
+        wordCount: saved.wordCount,
+        version: saved.version
+      }
+      const row = chapters.value.find((item) => item.id === id)
+      if (row) {
+        row.wordCount = saved.wordCount
+        row.version = saved.version
+      }
+    }
+    autoSaveAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    autoSaveError.value = ''
+    writeLocalDraft(id, contentDraft.value)
+    autoSaveState.value = 'saved'
+    ElMessage.success('已用你的内容覆盖')
+  } catch (error) {
+    autoSaveState.value = 'error'
+    autoSaveError.value = (error as Error).message || '覆盖失败'
+  } finally {
+    autoSaveInFlight = false
+  }
+}
+
+/** 放弃本地改动：拉服务器最新正文覆盖编辑区 */
+async function discardLocalAndReload(chapterId: string) {
+  try {
+    const detail = await getChapter(chapterId)
+    editingChapter.value = detail
+    editingChapterTitle.value = detail.title || ''
+    contentDraft.value = detail.content || ''
+    contentStatus.value = detail.status || 'DRAFT'
+    autoSaveBaseline = detail.content || ''
+    autoSaveChapterId = chapterId
+    clearLocalDraft(chapterId)
+    autoSaveState.value = 'saved'
+    autoSaveError.value = ''
+    ElMessage.info('已载入服务器最新版本')
+  } catch (error) {
+    ElMessage.error((error as Error).message || '载入最新版本失败')
+  }
+}
+
+/** 进入编辑态时为某一章重置自动保存基准，并尝试恢复本地草稿 */
+function armAutoSave(chapterId: string) {
+  resetAutoSave()
+  autoSaveChapterId = chapterId
+  autoSaveBaseline = editingChapter.value?.content || ''
+  const local = readLocalDraft(chapterId)
+  if (!local || local === autoSaveBaseline) {
+    if (local) {
+      clearLocalDraft(chapterId)
+    }
+    return
+  }
+  void ElMessageBox.confirm(
+    '检测到这一章有上次没保存成功的本地草稿，要恢复吗？',
+    '发现本地草稿',
+    { type: 'info', confirmButtonText: '恢复草稿', cancelButtonText: '用服务器版本', distinguishCancelAndClose: true }
+  ).then(() => {
+    contentDraft.value = local
+  }).catch(() => {
+    clearLocalDraft(chapterId)
+  })
+}
+
+/** 手动重试自动保存 */
+function retryAutoSave() {
+  if (autoSaveState.value === 'error') {
+    autoSaveError.value = ''
+    void runAutoSave()
+  }
+}
+
+/** 离开页面前，若有未落库的改动给浏览器一个提醒 */
+function handleBeforeUnload(event: BeforeUnloadEvent) {
+  if (contentEditing.value && contentDraft.value !== autoSaveBaseline) {
+    event.preventDefault()
+    event.returnValue = ''
+  }
+}
+
+watch(contentDraft, onContentDraftChanged)
+
+onMounted(() => {
+  window.addEventListener('beforeunload', handleBeforeUnload)
+})
+
 /* ---------- 正文历史版本 ---------- */
 const versionDrawer = ref<InstanceType<typeof ChapterVersionDrawer> | null>(null)
 
@@ -2697,6 +3018,10 @@ function handleVersionRestored(chapter: ChapterVO) {
   contentDraft.value = chapter.content || ''
   contentStatus.value = chapter.status || 'DRAFT'
   contentEditing.value = false
+  if (activeChapterId.value) {
+    clearLocalDraft(activeChapterId.value)
+  }
+  resetAutoSave()
   void loadChapters()
 }
 
@@ -3539,6 +3864,10 @@ async function submitAiContent() {
         status: 'WRITING'
       }
     }
+    // AI 落库即已保存：把自动保存基准对齐，别让它再重复写一遍
+    autoSaveBaseline = result.content || ''
+    clearLocalDraft(chapterId)
+    autoSaveState.value = 'idle'
     await loadChapters()
     const searched = result.search && result.search.results.length
       ? `，参考 ${result.search.results.length} 条资料` : ''
@@ -3607,6 +3936,8 @@ onBeforeUnmount(() => {
   contentAbort?.abort()
   stopAiItemTimer()
   stopAnalysisTimer()
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  clearAutoSaveTimers()
 })
 
 /* ---------- 人物关系 ---------- */
@@ -4584,7 +4915,7 @@ async function selectChapter(chapter: ChapterVO) {
   }
   if (contentDirty.value) {
     try {
-      await ElMessageBox.confirm('当前章节还有未保存的修改，切走后会丢失。确定切换吗？', '有未保存的修改', {
+      await ElMessageBox.confirm('当前章节还有没保存成功的修改（自动保存还没落地），切走后会丢失。确定切换吗？', '有未保存的修改', {
         type: 'warning',
         confirmButtonText: '放弃修改并切换',
         cancelButtonText: '继续编辑'
@@ -4593,6 +4924,11 @@ async function selectChapter(chapter: ChapterVO) {
       return
     }
   }
+  // 丢掉上一章的自动保存状态与本地草稿
+  if (activeChapterId.value) {
+    clearLocalDraft(activeChapterId.value)
+  }
+  resetAutoSave()
   try {
     const detail = await getChapter(chapter.id)
     activeChapterId.value = chapter.id
@@ -4613,6 +4949,9 @@ function startContentEdit() {
     return
   }
   contentEditing.value = true
+  if (activeChapterId.value) {
+    armAutoSave(activeChapterId.value)
+  }
 }
 
 function cancelContentEdit() {
@@ -4621,6 +4960,11 @@ function cancelContentEdit() {
     contentDraft.value = editingChapter.value.content || ''
     contentStatus.value = editingChapter.value.status || 'DRAFT'
   }
+  // 主动取消 = 丢弃本次编辑：清掉本地草稿与自动保存状态
+  if (activeChapterId.value) {
+    clearLocalDraft(activeChapterId.value)
+  }
+  resetAutoSave()
   contentEditing.value = false
 }
 
@@ -4654,9 +4998,15 @@ async function saveContent() {
   if (!activeChapterId.value) {
     return
   }
+  const chapterId = activeChapterId.value
+  // 先撤掉待触发的自动保存，并等正在飞的那条落地，免得两条请求抢同一行
+  clearAutoSaveTimers()
+  if (autoSavePending) {
+    await autoSavePending
+  }
   contentSaving.value = true
   try {
-    const saved = await updateChapter(activeChapterId.value, {
+    const saved = await updateChapter(chapterId, {
       title: editingChapterTitle.value.trim() || editingChapter.value?.title,
       content: contentDraft.value,
       status: contentStatus.value
@@ -4667,6 +5017,8 @@ async function saveContent() {
     contentDraft.value = saved.content || ''
     contentStatus.value = saved.status || 'DRAFT'
     contentEditing.value = false
+    clearLocalDraft(chapterId)
+    resetAutoSave()
     ElMessage.success('正文已保存')
     await loadChapters()
     await refreshNovel()
@@ -4802,6 +5154,14 @@ function openRevise(row: ChapterAnalysisOverviewVO) {
 async function handleRevisionSaved(payload: { chapterId: string; content: string }) {
   if (activeChapterId.value === payload.chapterId) {
     contentDraft.value = payload.content
+    // 改稿已在服务端落库：同步基准与本地草稿，别让自动保存再写一遍
+    if (editingChapter.value) {
+      editingChapter.value = { ...editingChapter.value, content: payload.content }
+    }
+    autoSaveBaseline = payload.content
+    clearLocalDraft(payload.chapterId)
+    autoSaveState.value = 'saved'
+    autoSaveError.value = ''
   }
   try {
     await loadChapters()
@@ -6149,6 +6509,45 @@ function roleType(value?: string) {
 .editor-words {
   font-size: 12px;
   color: var(--sf-text-muted);
+}
+
+.autosave-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--sf-text-muted);
+  white-space: nowrap;
+}
+
+.autosave-status.autosave-saved {
+  color: var(--sf-success, #67c23a);
+}
+
+.autosave-status.autosave-error,
+.autosave-status.autosave-conflict {
+  color: var(--sf-danger, #f56c6c);
+}
+
+.autosave-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: autosave-spin 0.7s linear infinite;
+}
+
+@keyframes autosave-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.autosave-retry {
+  color: var(--sf-danger, #f56c6c);
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 .editor-title-input {

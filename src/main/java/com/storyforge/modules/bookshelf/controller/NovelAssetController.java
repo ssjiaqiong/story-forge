@@ -3,6 +3,7 @@ package com.storyforge.modules.bookshelf.controller;
 import com.storyforge.common.api.PageResult;
 import com.storyforge.common.api.R;
 import com.storyforge.common.ratelimit.RateLimit;
+import com.storyforge.modules.bookshelf.dto.ChapterContentRequest;
 import com.storyforge.modules.bookshelf.dto.ChapterRequest;
 import com.storyforge.modules.bookshelf.dto.ChapterVolumeRequest;
 import com.storyforge.modules.bookshelf.dto.ChapterVersionDetailVO;
@@ -43,6 +44,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -99,6 +101,16 @@ public class NovelAssetController {
     @RateLimit(dimension = RateLimit.Dimension.USER, limit = 300, windowSeconds = 60)
     public R<ChapterVO> updateChapter(@PathVariable Long id, @Valid @RequestBody ChapterRequest request) {
         return R.ok(assetService.updateChapter(id, request));
+    }
+
+    @Operation(summary = "自动保存正文",
+            description = "只改本章正文与字数并增量修正全书字数；不碰标题/状态/关联。"
+                    + "带上 version 可检测多端冲突（返回 40071）")
+    @PatchMapping("/chapters/{id}/content")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 600, windowSeconds = 60)
+    public R<ChapterVO> saveChapterContent(@PathVariable Long id,
+                                           @Valid @RequestBody ChapterContentRequest request) {
+        return R.ok(assetService.saveContent(id, request.getContent(), request.getVersion()));
     }
 
     @Operation(summary = "AI 生成大纲", description = "按作品设定与要求一次生成多章标题与摘要，默认联网检索资料")

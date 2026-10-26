@@ -38,6 +38,19 @@ public interface NovelAssetService {
     ChapterVO updateChapter(Long chapterId, ChapterRequest request, String source);
 
     /**
+     * 正文自动保存（轻量路径）。
+     *
+     * <p>只改本章正文与字数，并<b>增量</b>修正小说的总字数——不走
+     * {@link #updateChapter(Long, ChapterRequest)}：那条路会重算全书字数、重建关联、
+     * 每次都存快照，20 秒一次的自动保存用不起。快照在这里按「距上一版多久」节流，
+     * 来源记为 {@code AUTO}。</p>
+     *
+     * <p>{@code version} 是客户端上次读到的乐观锁版本号：与库里不一致说明别处已改过，
+     * 抛 {@code 40071}（前端据此弹「用我的覆盖 / 放弃我的改动」）。传 null 表示不做冲突检测。</p>
+     */
+    ChapterVO saveContent(Long chapterId, String content, Integer version);
+
+    /**
      * 把章节移动到另一卷。
      *
      * <p>只改归属，不动章号；目标卷不存在时自动建一卷。改卷名的唯一入口是

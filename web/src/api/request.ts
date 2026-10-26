@@ -27,7 +27,9 @@ export const ErrorCodes = {
   BAD_CREDENTIALS: 20002,
   USER_DISABLED: 20003,
   MUST_CHANGE_PASSWORD: 20004,
-  FORBIDDEN: 20006
+  FORBIDDEN: 20006,
+  /** 自动保存正文时检测到「这一章已在别处被修改」 */
+  CHAPTER_CONFLICT: 40071
 } as const
 
 export const http: AxiosInstance = axios.create({
@@ -127,6 +129,8 @@ export const api = {
     request<T>({ url, method: 'POST', data, timeout, signal }),
   put: <T = unknown>(url: string, data?: unknown, timeout?: number, signal?: AbortSignal) =>
     request<T>({ url, method: 'PUT', data, timeout, signal }),
+  patch: <T = unknown>(url: string, data?: unknown, timeout?: number, signal?: AbortSignal) =>
+    request<T>({ url, method: 'PATCH', data, timeout, signal }),
   delete: <T = unknown>(url: string, timeout?: number, signal?: AbortSignal) =>
     request<T>({ url, method: 'DELETE', timeout, signal })
 }

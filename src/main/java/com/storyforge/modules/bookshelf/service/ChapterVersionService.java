@@ -35,6 +35,14 @@ public interface ChapterVersionService {
     /** 章节下的历史版本条数，前端用来显示角标。 */
     long count(Long chapterId);
 
+    /**
+     * 该章最近一条「自动保存」版本的创建时间；没有则返回 null。
+     *
+     * <p>自动保存的节流靠它：距上一版不足 N 分钟就不再写快照，
+     * 否则一章编辑十分钟能刷出几十条垃圾版本。</p>
+     */
+    java.time.LocalDateTime latestAutoAt(Long chapterId);
+
     /** 章节删除时一并清掉它的历史版本，避免留下指向空章的数据。 */
     void deleteByChapter(Long chapterId);
 

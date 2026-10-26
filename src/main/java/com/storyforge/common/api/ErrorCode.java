@@ -108,6 +108,7 @@ public enum ErrorCode {
     VOLUME_HAS_CHAPTERS(40068, "这一卷下还有章节，请先选择要迁移到哪一卷", 400),
     VOLUME_MOVE_INVALID(40069, "这一卷已经在最前 / 最后，移不动了", 400),
     VOLUME_TARGET_INVALID(40070, "目标卷不存在或已被删除", 404),
+    CHAPTER_CONFLICT(40071, "这一章已在别处被修改，请刷新后再试（可在弹窗里选择用你的内容覆盖）", 409),
 
     /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),
