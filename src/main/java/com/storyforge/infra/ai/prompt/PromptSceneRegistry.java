@@ -2,6 +2,7 @@ package com.storyforge.infra.ai.prompt;
 
 import com.storyforge.infra.ai.PromptKit;
 import com.storyforge.modules.ai.scene.AiScene;
+import com.storyforge.modules.bookshelf.dto.ConsistencyIssueType;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -193,6 +194,15 @@ public class PromptSceneRegistry {
     private static final List<PromptSceneSpec.PromptVariable> SYNC_VARIABLES = List.of(
             new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
             new PromptSceneSpec.PromptVariable("chapterNo", "本章章号", "12"));
+
+    /**
+     * 一致性检查：范围本身就写在提示词里（最近十章 / 单章 / 全书某一块），
+     * 帮助模型判断「这些信息够不够下结论」。
+     */
+    private static final List<PromptSceneSpec.PromptVariable> CONSISTENCY_VARIABLES = List.of(
+            new PromptSceneSpec.PromptVariable("novelTitle", "书名", "长夜将明"),
+            new PromptSceneSpec.PromptVariable("genre", "题材", "都市悬疑"),
+            new PromptSceneSpec.PromptVariable("scopeLabel", "本次检查范围", "第 8~12 章（共 5 章）"));
 
     /** 封面生成：书名、题材、标签、风格描述、文字要求、书名/作者文字 */
     private static final List<PromptSceneSpec.PromptVariable> COVER_VARIABLES = List.of(
@@ -440,6 +450,37 @@ public class PromptSceneRegistry {
                 - 属性与背包要写「本章结束后的值」，不要写变化量；正文没给具体数值就不要猜。
                 """, JSON_CONTRACT_LOCKED, SYNC_VARIABLES,
                 "状态同步（事实抽取）：控制登记口径，JSON 字段由系统锁定。");
+
+        register(AiScene.CONSISTENCY_CHECK, """
+                你是《{{novelTitle}}》的连贯性编辑（continuity editor），负责在正文里找出自相矛盾的地方。
+                这次的检查范围：{{scopeLabel}}。
+
+                【只报硬矛盾】
+                1. 只报读者能一眼看出不对的地方：人物状态、物品归属、时间顺序、称呼身份、伏笔是否回收。
+                   文风、节奏、写得好不好一律不评价，那是章节分析的事。
+                2. 每条都必须给出 evidence（正文原句，不超过 40 字）或能核对的具体依据；
+                   给不出证据的宁可不报——猜出来的问题会毁掉这个页面的可信度。
+                3. 下面这些<b>已由系统的规则层查出，不要重复报</b>：
+                   人物在已死亡 / 已失踪之后出场；物品已摧毁 / 遗失 / 消耗却仍有数量；
+                   人物首次登场章早于实际出场章；废弃事件挂进了有正文的章节；
+                   章号重复、断号、排序值异常；关联指向已删除的人物或事件。
+                4. 只根据给定的正文与档案判断，不要推测没写到的剧情，不要把「还没交代」当成矛盾。
+                5. 最多 8 条，按严重度从重到轻排；确实没发现就给空数组，不要为凑数报「可能」「也许」。
+                """,
+                jsonContract("""
+                        {"issues": [{"type": "CHARACTER_STATE", "severity": "P0", "chapterNo": 12,
+                                     "title": "老周在第 8 章已死，这一章又在说话",
+                                     "detail": "第 8 章写他坠崖，这里却让他递烟，除非补一句回忆交代",
+                                     "evidence": "老周把烟头摁在墙上，说这事没完",
+                                     "suggestion": "换成他人递烟，或开头补一句「他想起老周从前说过」"}]}
+                        type 只能取：
+                        """ + ConsistencyIssueType.aiWhitelist() + """
+                        ；severity 只能取 P0 / P1 / P2；chapterNo 填问题所在章号，全书级问题填 0。
+                        issues 最多 8 条，没有就给 []。
+                        """),
+                CONSISTENCY_VARIABLES,
+                "一致性检查（AI 层）：控制挑刺的口味与严格程度；输出字段与类型白名单由系统锁定。"
+                        + "规则层已经查出的硬伤不要重复报，系统会自动合并两层结果。");
 
         register(AiScene.CHAPTER_REVISE, """
                 你是《{{novelTitle}}》的改稿编辑，负责按审稿意见修改第 {{chapterNo}} 章。

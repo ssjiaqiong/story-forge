@@ -1153,6 +1153,134 @@
           <p>还没有章节。先在大纲里生成章节，再回来分析。</p>
         </div>
       </div>
+
+      <!-- 体检（一致性 / 矛盾检查） -->
+      <div v-show="activeMenu === 'consistency'" class="panel">
+        <header class="panel-head">
+          <div>
+            <h2>体检</h2>
+            <p>
+              规则层查结构化硬伤：死人出场、毁掉的物品仍有数量、首次登场章早于出场章、废弃事件挂进了正文、
+              章号断号与排序异常、关联指向已删除的人物或事件——秒出，不花 token。
+              AI 深检再读一遍正文找语义矛盾：称谓前后不一、伏笔没回收、时间线倒流、写了与设定冲突的能力。
+              每条都给证据，可以逐条忽略。
+            </p>
+          </div>
+          <div class="panel-actions">
+            <el-button :icon="Refresh" :loading="consistencyLoading" circle @click="loadConsistencyPanel" />
+            <el-button :icon="Aim" :loading="consistencyRulesLoading" @click="runConsistencyRules">
+              只跑规则（秒出）
+            </el-button>
+            <el-button
+              type="primary"
+              :icon="FirstAidKit"
+              :loading="consistencyRunning"
+              :disabled="!writtenChapters.length"
+              @click="openConsistencyDialog"
+            >
+              规则 + AI 深检
+            </el-button>
+          </div>
+        </header>
+
+        <div v-if="consistencyTask" class="write-task-bar">
+          <template v-if="consistencyRunning">
+            <span class="stream-dot" />
+            <strong class="stream-label">正在体检</strong>
+            <span class="stream-meta">
+              {{ consistencyTask.stepLabel }} · 规则 {{ consistencyTask.ruleCount }} 条 · AI
+              {{ consistencyTask.aiCount }} 条 · 已读 {{ consistencyTask.blockDone }}/{{ consistencyTask.blockCount }} 块
+            </span>
+            <span class="stream-spacer" />
+            <el-button size="small" :icon="VideoPause" @click="stopConsistencyTask">停止</el-button>
+          </template>
+          <template v-else>
+            <span class="stream-label" :class="{ 'is-failed': consistencyTask.status === 'FAILED' }">
+              体检{{ consistencyTask.status === 'CANCELLED' ? '已停止' : '完成' }}：规则
+              {{ consistencyTask.ruleCount }} 条 / AI {{ consistencyTask.aiCount }} 条，共
+              {{ consistencyTask.total }} 条（硬伤 {{ consistencyTask.p0 }}）
+            </span>
+            <span v-if="consistencyTask.message" class="stream-meta">{{ consistencyTask.message }}</span>
+            <span v-if="consistencyTask.errorMessage" class="stream-meta">{{ consistencyTask.errorMessage }}</span>
+            <span class="stream-spacer" />
+            <el-button size="small" @click="consistencyTask = null">收起</el-button>
+          </template>
+        </div>
+
+        <div class="consistency-bar">
+          <button
+            v-for="card in consistencyCards"
+            :key="card.severity"
+            type="button"
+            class="consistency-count"
+            :class="['is-' + card.severity.toLowerCase(), { 'is-active': consistencySeverity === card.severity }]"
+            @click="toggleConsistencySeverity(card.severity)"
+          >
+            <span>{{ card.count }}</span>
+            <em>{{ card.label }}</em>
+          </button>
+          <span class="stream-spacer" />
+          <el-radio-group v-model="consistencyStatus" size="small" @change="loadConsistencyIssues">
+            <el-radio-button value="OPEN">待处理</el-radio-button>
+            <el-radio-button value="IGNORED">已忽略</el-radio-button>
+            <el-radio-button value="ALL">全部</el-radio-button>
+          </el-radio-group>
+        </div>
+
+        <div v-if="consistencyRuns.length" class="consistency-runs">
+          <span class="consistency-runs-label">最近检查</span>
+          <el-tag
+            v-for="run in consistencyRuns"
+            :key="run.runId"
+            size="small"
+            effect="plain"
+            :type="run.runId === consistencyRunId ? 'primary' : 'info'"
+            class="consistency-run-tag"
+            @click="selectConsistencyRun(run.runId)"
+          >
+            {{ run.scopeLabel }} · {{ run.total }} 条
+          </el-tag>
+          <el-tag v-if="consistencyRunId" size="small" type="info" class="consistency-run-tag" @click="selectConsistencyRun('')">
+            显示全部批次
+          </el-tag>
+        </div>
+
+        <div v-if="consistencyIssues.length" class="consistency-list">
+          <article
+            v-for="issue in consistencyIssues"
+            :key="issue.id"
+            class="consistency-item"
+            :class="['is-' + issue.severity.toLowerCase(), { 'is-closed': issue.status !== 'OPEN' }]"
+          >
+            <header>
+              <span class="consistency-sev">{{ issue.severity }}</span>
+              <strong class="consistency-title">{{ issue.title }}</strong>
+              <el-tag size="small" effect="plain">{{ issue.typeLabel }}</el-tag>
+              <el-tag size="small" effect="plain" type="info">{{ issue.sourceLabel }}</el-tag>
+              <span v-if="issue.chapterNo" class="consistency-chapter" @click="jumpToIssueChapter(issue)">
+                第 {{ issue.chapterNo }} 章 {{ issue.chapterTitle || '' }}
+              </span>
+              <span class="stream-spacer" />
+              <el-button v-if="issue.status === 'OPEN'" size="small" @click="setIssueStatus(issue, 'IGNORED')">
+                忽略
+              </el-button>
+              <template v-else>
+                <el-tag size="small" effect="plain" type="info">{{ issue.statusLabel }}</el-tag>
+                <el-button size="small" @click="setIssueStatus(issue, 'OPEN')">恢复关注</el-button>
+              </template>
+            </header>
+            <p v-if="issue.detail" class="consistency-detail">{{ issue.detail }}</p>
+            <p v-if="issue.evidence" class="consistency-evidence">依据：{{ issue.evidence }}</p>
+            <p v-if="issue.suggestion" class="consistency-suggest">建议：{{ issue.suggestion }}</p>
+          </article>
+        </div>
+        <div v-else class="empty-block small">
+          <p v-if="consistencyChecked">
+            没有{{ consistencyStatus === 'IGNORED' ? '被忽略的问题' : consistencySeverityLabel + '问题' }}。
+          </p>
+          <p v-else>还没有体检过。点「只跑规则」先查一遍结构化硬伤，秒出且不用配 AI。</p>
+        </div>
+      </div>
     </section>
 
     <!-- AI 生成大纲弹窗 -->
@@ -1375,6 +1503,52 @@
       <template #footer>
         <el-button @click="aiContentDialog.visible = false">取消</el-button>
         <el-button type="primary" :disabled="contentStreaming" @click="submitAiContent">开始写</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 一致性检查弹窗 -->
+    <el-dialog v-model="consistencyDialog.visible" title="规则 + AI 深检" width="560px" destroy-on-close>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="ai-input-note"
+        title="规则层永远跑全书；AI 深检按这里的范围读正文。范围越大 token 花得越多，默认只查最近 10 章。"
+      />
+      <el-form label-width="96px">
+        <el-form-item label="检查范围">
+          <el-radio-group v-model="consistencyDialog.scope">
+            <el-radio value="RECENT">最近若干章</el-radio>
+            <el-radio value="CHAPTER">只查一章</el-radio>
+            <el-radio value="ALL">全书</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="consistencyDialog.scope === 'RECENT'" label="往前看几章">
+          <el-input-number
+            v-model="consistencyDialog.recentCount"
+            :min="5"
+            :max="30"
+            controls-position="right"
+            class="w-full"
+          />
+        </el-form-item>
+        <el-form-item v-else-if="consistencyDialog.scope === 'CHAPTER'" label="检查哪一章">
+          <el-select v-model="consistencyDialog.chapterId" class="w-full" placeholder="选择章节">
+            <el-option
+              v-for="chapter in writtenChapters"
+              :key="chapter.id"
+              :value="chapter.id"
+              :label="`第 ${chapter.chapterNo} 章 ${chapter.title || ''}`"
+            />
+          </el-select>
+        </el-form-item>
+        <p v-else class="ai-input-note plain">
+          全书 {{ writtenChapters.length }} 章有正文，按每 5 章一块逐块读（最多 12 块）。
+        </p>
+      </el-form>
+      <template #footer>
+        <el-button @click="consistencyDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="consistencyStarting" @click="submitConsistencyTask">开始体检</el-button>
       </template>
     </el-dialog>
 
@@ -2165,7 +2339,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, Edit, EditPen, Files, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
+import { Aim, ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, Edit, EditPen, Files, FirstAidKit, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
 import {
   exportNovelTxt,
   getNovelDetail,
@@ -2226,6 +2400,16 @@ import {
   getWriteTask,
   startWriteTask,
   type WriteTaskVO,
+  cancelConsistencyTask,
+  getConsistencyTask,
+  listConsistencyIssues,
+  listConsistencyRuns,
+  runConsistencyRules as runConsistencyRulesCheck,
+  startConsistencyTask,
+  updateConsistencyIssue,
+  type ConsistencyIssueVO,
+  type ConsistencyRunVO,
+  type ConsistencyTaskVO,
   listMasterOutlines,
   listRelations,
   listTimeline,
@@ -2265,7 +2449,8 @@ const MENUS = [
   { key: 'timeline', label: '事件', icon: Calendar },
   { key: 'items', label: '物品', icon: Collection },
   { key: 'content', label: '正文', icon: Reading },
-  { key: 'analysis', label: '分析', icon: DataAnalysis }
+  { key: 'analysis', label: '分析', icon: DataAnalysis },
+  { key: 'consistency', label: '体检', icon: FirstAidKit }
 ]
 
 const GENRES = ['玄幻', '仙侠', '都市', '悬疑', '科幻', '历史', '游戏', '轻小说', '武侠', '现实']
@@ -3352,6 +3537,7 @@ onBeforeUnmount(() => {
   stopAiOutlineTimer()
   stopAiContentTimer()
   stopWriteTaskPolling()
+  stopConsistencyPolling()
   // 离开页面就别让后台继续生成：断开连接后服务端会放弃落库
   contentAbort?.abort()
   stopAiItemTimer()
@@ -3500,6 +3686,204 @@ const aiContentGenerating = ref(false)
 const aiContentElapsed = ref(0)
 let aiContentTimer: number | undefined
 const contentSearch = ref<SearchBundleVO | null>(null)
+
+/* ---------- 体检（一致性 / 矛盾检查） ---------- */
+/** 有正文的章节：AI 深检只在这些章节里选范围 */
+const writtenChapters = computed(() => chapters.value.filter((item) => (item.wordCount || 0) > 0))
+
+const consistencyIssues = ref<ConsistencyIssueVO[]>([])
+const consistencyRuns = ref<ConsistencyRunVO[]>([])
+const consistencyTask = ref<ConsistencyTaskVO | null>(null)
+const consistencyRunId = ref('')
+const consistencyStatus = ref('OPEN')
+const consistencySeverity = ref('')
+const consistencyLoading = ref(false)
+const consistencyRulesLoading = ref(false)
+const consistencyStarting = ref(false)
+const consistencyChecked = ref(false)
+const consistencyRunning = computed(() => consistencyTask.value?.status === 'RUNNING')
+const consistencyDialog = reactive({
+  visible: false,
+  scope: 'RECENT' as 'RECENT' | 'CHAPTER' | 'ALL',
+  chapterId: '',
+  recentCount: 10
+})
+let consistencyTimer: number | undefined
+
+/** 计数卡：点一下按该严重度筛选，再点一下取消 */
+const consistencyCards = computed(() => {
+  const counts = { P0: 0, P1: 0, P2: 0 }
+  for (const issue of consistencyIssues.value) {
+    if (issue.severity === 'P0') counts.P0 += 1
+    else if (issue.severity === 'P1') counts.P1 += 1
+    else counts.P2 += 1
+  }
+  return [
+    { severity: 'P0', label: '硬伤', count: counts.P0 },
+    { severity: 'P1', label: '需注意', count: counts.P1 },
+    { severity: 'P2', label: '提示', count: counts.P2 }
+  ]
+})
+
+const consistencySeverityLabel = computed(() => {
+  const hit = consistencyCards.value.find((card) => card.severity === consistencySeverity.value)
+  return hit ? hit.label : ''
+})
+
+async function loadConsistencyIssues() {
+  const params: { status?: string; severity?: string; runId?: string } = {}
+  if (consistencyStatus.value !== 'ALL') params.status = consistencyStatus.value
+  if (consistencySeverity.value) params.severity = consistencySeverity.value
+  if (consistencyRunId.value) params.runId = consistencyRunId.value
+  consistencyIssues.value = await listConsistencyIssues(novelId.value, params)
+}
+
+async function loadConsistencyRuns() {
+  consistencyRuns.value = await listConsistencyRuns(novelId.value)
+}
+
+async function loadConsistencyPanel() {
+  if (consistencyLoading.value) return
+  consistencyLoading.value = true
+  try {
+    await Promise.all([loadConsistencyIssues(), loadConsistencyRuns()])
+    consistencyChecked.value = consistencyRuns.value.length > 0 || consistencyIssues.value.length > 0
+  } catch (error) {
+    ElMessage.error((error as Error).message || '加载体检结果失败')
+  } finally {
+    consistencyLoading.value = false
+  }
+}
+
+/** 只跑规则：秒出，不调 AI，所以不弹任何等待提示 */
+async function runConsistencyRules() {
+  if (consistencyRulesLoading.value) return
+  consistencyRulesLoading.value = true
+  try {
+    const found = await runConsistencyRulesCheck(novelId.value)
+    consistencyStatus.value = 'OPEN'
+    consistencySeverity.value = ''
+    await Promise.all([loadConsistencyIssues(), loadConsistencyRuns()])
+    consistencyChecked.value = true
+    if (!found.length) {
+      ElMessage.success('规则层没有发现问题')
+    } else {
+      ElMessage.success(`规则检查完成，发现 ${found.length} 处问题`)
+    }
+  } catch (error) {
+    ElMessage.error((error as Error).message || '规则检查失败')
+  } finally {
+    consistencyRulesLoading.value = false
+  }
+}
+
+function openConsistencyDialog() {
+  consistencyDialog.scope = 'RECENT'
+  consistencyDialog.chapterId = writtenChapters.value[0]?.id || ''
+  consistencyDialog.recentCount = 10
+  consistencyDialog.visible = true
+}
+
+async function submitConsistencyTask() {
+  if (consistencyDialog.scope === 'CHAPTER' && !consistencyDialog.chapterId) {
+    ElMessage.warning('请先选择要检查的章节')
+    return
+  }
+  consistencyStarting.value = true
+  try {
+    const task = await startConsistencyTask(novelId.value, {
+      scope: consistencyDialog.scope,
+      chapterId: consistencyDialog.scope === 'CHAPTER' ? consistencyDialog.chapterId : undefined,
+      recentCount: consistencyDialog.scope === 'RECENT' ? consistencyDialog.recentCount : undefined
+    })
+    consistencyTask.value = task
+    consistencyDialog.visible = false
+    startConsistencyPolling()
+  } catch (error) {
+    ElMessage.error((error as Error).message || '启动体检失败')
+  } finally {
+    consistencyStarting.value = false
+  }
+}
+
+function startConsistencyPolling() {
+  stopConsistencyPolling()
+  consistencyTimer = window.setInterval(() => void pollConsistencyTask(), 800)
+}
+
+function stopConsistencyPolling() {
+  if (consistencyTimer !== undefined) {
+    window.clearInterval(consistencyTimer)
+    consistencyTimer = undefined
+  }
+}
+
+async function pollConsistencyTask() {
+  const task = consistencyTask.value
+  if (!task) {
+    stopConsistencyPolling()
+    return
+  }
+  try {
+    const latest = await getConsistencyTask(task.taskId)
+    consistencyTask.value = latest
+    if (latest.status !== 'RUNNING') {
+      stopConsistencyPolling()
+      consistencyStatus.value = 'OPEN'
+      consistencySeverity.value = ''
+      consistencyRunId.value = latest.runId || ''
+      await Promise.all([loadConsistencyIssues(), loadConsistencyRuns()])
+      consistencyChecked.value = true
+    }
+  } catch (error) {
+    // 任务过期或网络抖动：停掉轮询，保留最后一次快照，不让定时器一直转
+    stopConsistencyPolling()
+    consistencyTask.value = null
+    ElMessage.error((error as Error).message || '体检进度获取失败')
+  }
+}
+
+async function stopConsistencyTask() {
+  const task = consistencyTask.value
+  if (!task) return
+  try {
+    consistencyTask.value = await cancelConsistencyTask(task.taskId)
+  } catch (error) {
+    ElMessage.error((error as Error).message || '停止体检失败')
+  }
+}
+
+async function setIssueStatus(issue: ConsistencyIssueVO, status: 'OPEN' | 'IGNORED' | 'FIXED') {
+  try {
+    await updateConsistencyIssue(issue.id, status)
+    await loadConsistencyIssues()
+    await loadConsistencyRuns()
+  } catch (error) {
+    ElMessage.error((error as Error).message || '更新问题状态失败')
+  }
+}
+
+function toggleConsistencySeverity(severity: string) {
+  consistencySeverity.value = consistencySeverity.value === severity ? '' : severity
+  void loadConsistencyIssues()
+}
+
+function selectConsistencyRun(runId: string) {
+  consistencyRunId.value = consistencyRunId.value === runId ? '' : runId
+  void loadConsistencyIssues()
+}
+
+/** 从问题跳到对应章节：把章节加载进正文面板再切过去 */
+async function jumpToIssueChapter(issue: ConsistencyIssueVO) {
+  if (!issue.chapterId) return
+  const target = chapters.value.find((item) => item.id === issue.chapterId)
+  if (!target) {
+    ElMessage.warning('这一章已经不存在了')
+    return
+  }
+  await selectChapter(target)
+  activeMenu.value = 'content'
+}
 
 /* ---------- 批量连写 N 章 ---------- */
 const writeTaskDialog = reactive({
@@ -3724,9 +4108,12 @@ async function loadAll() {
     }
     characters.value = detail.characters || []
     await Promise.all([loadChapters(), loadMasterOutlines(), loadTimeline(), loadItems(), loadRelations(), loadFactions(), loadBagAll()])
-    // 直接带 ?tab=analysis 进入时不会触发菜单切换，这里补一次初始化
+    // 直接带 ?tab=xxx 进入时不会触发菜单切换，这里补一次初始化
     if (activeMenu.value === 'analysis') {
       await loadAnalysisPanel()
+    }
+    if (activeMenu.value === 'consistency') {
+      await loadConsistencyPanel()
     }
   } catch (error) {
     ElMessage.error((error as Error).message || '加载小说失败')
@@ -3739,6 +4126,9 @@ function onMenuSelect(key: string) {
   activeMenu.value = key
   if (key === 'analysis') {
     void loadAnalysisPanel()
+  }
+  if (key === 'consistency') {
+    void loadConsistencyPanel()
   }
   if (key === 'characters') {
     // 人物卡片上要显示背包摘要，进面板先取一次（一次性取整本书，不分人请求）
@@ -5741,6 +6131,168 @@ function roleType(value?: string) {
 .write-task-item.is-skipped {
   color: var(--sf-text-muted);
   opacity: 0.75;
+}
+
+/* 体检：严重度计数卡 + 问题卡片 */
+.consistency-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.consistency-count {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 84px;
+  padding: 6px 14px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sf-text-muted);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.consistency-count span {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.consistency-count em {
+  font-style: normal;
+  font-size: 12px;
+}
+
+.consistency-count:hover {
+  border-color: var(--el-border-color);
+}
+
+.consistency-count.is-p0 {
+  border-color: var(--el-color-danger-light-5);
+  color: var(--el-color-danger);
+}
+
+.consistency-count.is-p1 {
+  border-color: var(--el-color-warning-light-5);
+  color: var(--el-color-warning);
+}
+
+.consistency-count.is-p2 {
+  border-color: var(--el-color-info-light-5);
+  color: var(--el-color-info);
+}
+
+.consistency-count.is-active {
+  background: var(--el-fill-color-light);
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.consistency-runs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.consistency-runs-label {
+  color: var(--sf-text-muted);
+  font-size: 12px;
+}
+
+.consistency-run-tag {
+  cursor: pointer;
+}
+
+.consistency-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.consistency-item {
+  padding: 10px 14px;
+  border: 1px solid var(--el-border-color-light);
+  border-left: 3px solid var(--el-border-color);
+  border-radius: 6px;
+}
+
+.consistency-item.is-p0 {
+  border-left-color: var(--el-color-danger);
+}
+
+.consistency-item.is-p1 {
+  border-left-color: var(--el-color-warning);
+}
+
+.consistency-item.is-p2 {
+  border-left-color: var(--el-color-info);
+}
+
+.consistency-item.is-closed {
+  opacity: 0.62;
+}
+
+.consistency-item header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.consistency-sev {
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--el-fill-color);
+  color: var(--sf-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.consistency-item.is-p0 .consistency-sev {
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+}
+
+.consistency-item.is-p1 .consistency-sev {
+  background: var(--el-color-warning-light-9);
+  color: var(--el-color-warning);
+}
+
+.consistency-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.consistency-chapter {
+  color: var(--sf-brand);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.consistency-chapter:hover {
+  text-decoration: underline;
+}
+
+.consistency-detail,
+.consistency-evidence,
+.consistency-suggest {
+  margin: 6px 0 0;
+  color: var(--sf-text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.consistency-evidence {
+  color: var(--el-color-info);
+}
+
+.consistency-suggest {
+  color: var(--el-color-success);
 }
 
 @media (max-width: 1100px) {

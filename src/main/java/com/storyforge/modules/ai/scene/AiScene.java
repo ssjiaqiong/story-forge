@@ -32,6 +32,7 @@ public enum AiScene {
     FACTION_BUILD("势力生成", "角色与设定", AiConfigKind.TEXT),
     EVENT_SUPPLY("事件补货", "事件", AiConfigKind.TEXT),
     ANALYSIS_GEN("章节分析", "分析与质检", AiConfigKind.TEXT),
+    CONSISTENCY_CHECK("一致性检查", "分析与质检", AiConfigKind.TEXT),
     SYNC_EXTRACT("状态同步抽取", "分析与质检", AiConfigKind.TEXT),
     CHAPTER_REVISE("按分析修改", "分析与质检", AiConfigKind.TEXT),
     COVER_IMAGE("封面生成", "封面", AiConfigKind.IMAGE),

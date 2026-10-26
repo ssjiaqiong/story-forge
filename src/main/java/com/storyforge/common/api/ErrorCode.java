@@ -102,6 +102,8 @@ public enum ErrorCode {
     CHAPTER_VERSION_NOT_FOUND(40062, "历史版本不存在或已被删除", 404),
     CONTENT_GENERATE_RUNNING(40063, "本章正在生成中，请等它结束或先停止当前生成", 409),
     WRITE_TASK_RUNNING(40064, "还有一个连写任务在跑，请等它结束或先停止再发起新的", 409),
+    CONSISTENCY_TASK_RUNNING(40065, "这本书还有一个体检任务在跑，请等它结束再发起新的", 409),
+    CONSISTENCY_ISSUE_NOT_FOUND(40066, "这个问题不存在或已被删除", 404),
 
     /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),

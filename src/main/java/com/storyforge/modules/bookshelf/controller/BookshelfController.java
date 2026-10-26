@@ -9,6 +9,11 @@ import com.storyforge.modules.bookshelf.dto.BlueprintResultVO;
 import com.storyforge.modules.bookshelf.dto.BlueprintTaskVO;
 import com.storyforge.modules.bookshelf.dto.ConstraintFormRequest;
 import com.storyforge.modules.bookshelf.dto.ConstraintTextVO;
+import com.storyforge.modules.bookshelf.dto.ConsistencyCheckRequest;
+import com.storyforge.modules.bookshelf.dto.ConsistencyIssueStatusRequest;
+import com.storyforge.modules.bookshelf.dto.ConsistencyIssueVO;
+import com.storyforge.modules.bookshelf.dto.ConsistencyRunVO;
+import com.storyforge.modules.bookshelf.dto.ConsistencyTaskVO;
 import com.storyforge.modules.bookshelf.dto.NovelCreateRequest;
 import com.storyforge.modules.bookshelf.dto.NovelDetailVO;
 import com.storyforge.modules.bookshelf.dto.NovelEditRequest;
@@ -20,6 +25,7 @@ import com.storyforge.modules.bookshelf.service.BlueprintQuestionService;
 import com.storyforge.modules.bookshelf.service.BlueprintTaskService;
 import com.storyforge.modules.bookshelf.service.BookshelfService;
 import com.storyforge.modules.bookshelf.service.ChapterWriteTaskService;
+import com.storyforge.modules.bookshelf.service.ConsistencyService;
 import com.storyforge.modules.bookshelf.service.NovelTransferService;
 import com.storyforge.modules.bookshelf.service.NovelTxtExportService;
 import com.storyforge.modules.novel.dto.NovelVO;
@@ -43,6 +49,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * 书架：AI 生成小说设定并创建小说。
@@ -61,6 +68,7 @@ public class BookshelfController {
     private final NovelTransferService novelTransferService;
     private final NovelTxtExportService novelTxtExportService;
     private final ChapterWriteTaskService chapterWriteTaskService;
+    private final ConsistencyService consistencyService;
     private final ObjectMapper objectMapper;
 
     @Operation(summary = "建书前的信息追问",
@@ -121,6 +129,67 @@ public class BookshelfController {
     @RateLimit(dimension = RateLimit.Dimension.USER, limit = 60, windowSeconds = 60)
     public R<WriteTaskVO> cancelWriteTask(@PathVariable String taskId) {
         return R.ok(chapterWriteTaskService.cancel(taskId, UserContextHolder.requireUserId()));
+    }
+
+    /* ---------------- 一致性 / 矛盾检查 ---------------- */
+
+    @Operation(summary = "只跑规则层的体检",
+            description = "秒级返回：死人出场、毁掉的物品仍有数量、首次登场章早于出场章、废弃事件挂进正文、"
+                    + "章号断号与排序异常、悬空关联。不调 AI、不花 token；结果会落到一个新的检查批次里")
+    @PostMapping("/novels/{novelId}/consistency/rules-check")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 30, windowSeconds = 60)
+    public R<List<ConsistencyIssueVO>> consistencyRulesCheck(@PathVariable Long novelId) {
+        return R.ok(consistencyService.checkRules(novelId));
+    }
+
+    @Operation(summary = "启动一致性检查任务",
+            description = "规则层 + AI 深检：规则先跑完，再按 5 章一块让模型读正文找语义矛盾；返回 taskId 供轮询。同一时间每本书只能有一个体检任务")
+    @PostMapping("/novels/{novelId}/consistency/tasks")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 10, windowSeconds = 60)
+    public R<ConsistencyTaskVO> startConsistencyTask(@PathVariable Long novelId,
+                                                     @Valid @RequestBody(required = false) ConsistencyCheckRequest request) {
+        return R.ok(consistencyService.start(novelId, request, UserContextHolder.requireUserId()));
+    }
+
+    @Operation(summary = "查询一致性检查进度", description = "返回阶段文案、块进度与已完成的问题清单")
+    @GetMapping("/consistency/tasks/{taskId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 600, windowSeconds = 60)
+    public R<ConsistencyTaskVO> consistencyTaskStatus(@PathVariable String taskId) {
+        return R.ok(consistencyService.status(taskId, UserContextHolder.requireUserId()));
+    }
+
+    @Operation(summary = "停止一致性检查",
+            description = "置停止标记，任务会在读完当前块后停下；规则层已经查出的问题保留")
+    @DeleteMapping("/consistency/tasks/{taskId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 60, windowSeconds = 60)
+    public R<ConsistencyTaskVO> cancelConsistencyTask(@PathVariable String taskId) {
+        return R.ok(consistencyService.cancel(taskId, UserContextHolder.requireUserId()));
+    }
+
+    @Operation(summary = "问题清单",
+            description = "按状态与严重度筛选；runId 省略时返回全部批次（默认按严重度与章号排序）")
+    @GetMapping("/novels/{novelId}/consistency/issues")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 600, windowSeconds = 60)
+    public R<List<ConsistencyIssueVO>> listConsistencyIssues(@PathVariable Long novelId,
+                                                             @RequestParam(required = false) String status,
+                                                             @RequestParam(required = false) String severity,
+                                                             @RequestParam(required = false) String runId) {
+        return R.ok(consistencyService.list(novelId, status, severity, runId));
+    }
+
+    @Operation(summary = "修改问题状态", description = "OPEN 待处理 / IGNORED 已忽略 / FIXED 已修复")
+    @PutMapping("/consistency/issues/{issueId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 300, windowSeconds = 60)
+    public R<ConsistencyIssueVO> updateConsistencyIssue(@PathVariable Long issueId,
+                                                        @Valid @RequestBody ConsistencyIssueStatusRequest request) {
+        return R.ok(consistencyService.updateStatus(issueId, request, UserContextHolder.requireUserId()));
+    }
+
+    @Operation(summary = "最近 10 次体检", description = "每个批次的问题数、严重度分布与是否跑过 AI 深检")
+    @GetMapping("/novels/{novelId}/consistency/runs")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 300, windowSeconds = 60)
+    public R<List<ConsistencyRunVO>> listConsistencyRuns(@PathVariable Long novelId) {
+        return R.ok(consistencyService.runs(novelId));
     }
 
     @Operation(summary = "生成小说蓝图",

@@ -697,3 +697,108 @@ export function restoreChapterVersion(chapterId: string, versionId: string) {
 export function deleteChapterVersion(chapterId: string, versionId: string) {
   return api.delete<void>(`/bookshelf/chapters/${chapterId}/versions/${versionId}`)
 }
+
+/* ---------------- 一致性 / 矛盾检查 ---------------- */
+
+export interface ConsistencyIssueVO {
+  id: string
+  runId: string
+  /** RULE 规则层 / AI 模型层 */
+  source: string
+  sourceLabel: string
+  chapterId?: string
+  chapterNo?: number
+  chapterTitle?: string
+  issueType: string
+  typeLabel: string
+  /** P0 / P1 / P2 */
+  severity: string
+  severityLabel: string
+  title: string
+  detail?: string
+  evidence?: string
+  suggestion?: string
+  /** OPEN / IGNORED / FIXED */
+  status: string
+  statusLabel: string
+  createdAt?: number
+}
+
+export interface ConsistencyRunVO {
+  runId: string
+  withAi: boolean
+  scope?: string
+  scopeLabel: string
+  createdAt?: number
+  total: number
+  p0: number
+  p1: number
+  p2: number
+  open: number
+}
+
+export interface ConsistencyTaskVO {
+  taskId: string
+  novelId: string
+  /** RUNNING / SUCCEEDED / PARTIAL / FAILED / CANCELLED */
+  status: string
+  percent: number
+  stepLabel?: string
+  runId?: string
+  scope?: string
+  scopeLabel?: string
+  blockCount: number
+  blockDone: number
+  ruleCount: number
+  aiCount: number
+  total: number
+  p0: number
+  p1: number
+  p2: number
+  issues: ConsistencyIssueVO[]
+  message?: string
+  errorMessage?: string
+  startedAt?: number
+  finishedAt?: number
+}
+
+export interface ConsistencyCheckPayload {
+  /** RECENT 最近若干章 / CHAPTER 单章 / ALL 全书 */
+  scope?: 'RECENT' | 'CHAPTER' | 'ALL'
+  chapterId?: string
+  /** 5~30 */
+  recentCount?: number
+}
+
+/** 只跑规则层：秒级返回，不调 AI */
+export function runConsistencyRules(novelId: string) {
+  return api.post<ConsistencyIssueVO[]>(`/bookshelf/novels/${novelId}/consistency/rules-check`)
+}
+
+/** 规则层 + AI 深检，返回任务供轮询 */
+export function startConsistencyTask(novelId: string, payload: ConsistencyCheckPayload) {
+  return api.post<ConsistencyTaskVO>(`/bookshelf/novels/${novelId}/consistency/tasks`, payload)
+}
+
+export function getConsistencyTask(taskId: string) {
+  return api.get<ConsistencyTaskVO>(`/bookshelf/consistency/tasks/${taskId}`)
+}
+
+export function cancelConsistencyTask(taskId: string) {
+  return api.delete<ConsistencyTaskVO>(`/bookshelf/consistency/tasks/${taskId}`)
+}
+
+export function listConsistencyIssues(
+  novelId: string,
+  params?: { status?: string; severity?: string; runId?: string }
+) {
+  return api.get<ConsistencyIssueVO[]>(`/bookshelf/novels/${novelId}/consistency/issues`, params)
+}
+
+export function updateConsistencyIssue(issueId: string, status: 'OPEN' | 'IGNORED' | 'FIXED') {
+  return api.put<ConsistencyIssueVO>(`/bookshelf/consistency/issues/${issueId}`, { status })
+}
+
+export function listConsistencyRuns(novelId: string) {
+  return api.get<ConsistencyRunVO[]>(`/bookshelf/novels/${novelId}/consistency/runs`)
+}
