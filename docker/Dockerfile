@@ -36,6 +36,10 @@ ENV TZ=Asia/Shanghai \
     LOG_PATH=/app/logs \
     JAVA_OPTS="-Xms256m -Xmx1024m"
 
+LABEL org.opencontainers.image.title="StoryForge" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later" \
+      org.opencontainers.image.source="https://gitee.com/jiaqiong/story-forge"
+
 COPY --from=build /src/target/app.jar /app/app.jar
 COPY docker/start.sh /app/start.sh
 RUN chmod +x /app/start.sh && mkdir -p /data/files /data/covers /app/logs

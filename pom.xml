@@ -18,6 +18,15 @@
     <name>storyforge</name>
     <description>StoryForge - AI 长篇小说创作平台（单用户空间 / 超管平台）</description>
 
+    <licenses>
+        <license>
+            <name>GNU Affero General Public License v3.0 or later</name>
+            <url>https://www.gnu.org/licenses/agpl-3.0.html</url>
+            <distribution>repo</distribution>
+            <comments>Copyright (C) 2026 Jiaqiong. Full text in the LICENSE file at the repository root.</comments>
+        </license>
+    </licenses>
+
     <properties>
         <java.version>17</java.version>
         <maven.compiler.release>17</maven.compiler.release>

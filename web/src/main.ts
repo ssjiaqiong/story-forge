@@ -1,3 +1,8 @@
+/**
+ * StoryForge 前端入口
+ * Copyright (C) 2026 Jiaqiong
+ * SPDX-License-Identifier: AGPL-3.0-or-later（协议全文见仓库根目录 LICENSE）
+ */
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'

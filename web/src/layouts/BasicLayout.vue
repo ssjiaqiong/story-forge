@@ -61,6 +61,8 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="password">修改口令</el-dropdown-item>
+                <el-dropdown-item command="source" divided>获取源码</el-dropdown-item>
+                <el-dropdown-item command="license">开源许可（AGPL-3.0）</el-dropdown-item>
                 <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -82,6 +84,7 @@ import { ElMessageBox } from 'element-plus'
 import { ArrowDown, Collection, Connection, EditPen, Expand, Fold, MagicStick, Moon, Notebook, Odometer, Reading, Search, Sunny, User, UserFilled } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
+import { LICENSE_URL, openExternal, SOURCE_REPO_URL } from '@/config/about'
 
 interface MenuItem {
   path: string
@@ -162,6 +165,15 @@ function toggleMenu() {
 async function onCommand(command: string) {
   if (command === 'password') {
     router.push({ name: 'change-password' })
+    return
+  }
+  /* AGPL-3.0 §13：登录后同样保留源码与协议的获取入口 */
+  if (command === 'source') {
+    openExternal(SOURCE_REPO_URL)
+    return
+  }
+  if (command === 'license') {
+    openExternal(LICENSE_URL)
     return
   }
   if (command === 'logout') {

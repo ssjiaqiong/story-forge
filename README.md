@@ -9,6 +9,8 @@ AI 长篇小说创作平台。**单用户空间**（用户即数据隔离单元�
 - [数据库兼容与部署运维](./docs/03-数据库兼容与部署运维.md)
 - [文档索引](./docs/README.md)
 
+**许可**：[AGPL-3.0](./LICENSE) · Copyright (C) 2026 Jiaqiong · 源码 <https://gitee.com/jiaqiong/story-forge>
+
 > 本目录即工程根目录，下文所有相对路径均以 `app/` 为起点。
 
 ---
@@ -32,6 +34,7 @@ AI 长篇小说创作平台。**单用户空间**（用户即数据隔离单元�
 ```text
 app/                                      ★ 工程根目录（后端 + 前端 + 部署 + 文档）
 ├── README.md                             本文件
+├── LICENSE                               GNU AGPL-3.0 协议全文（本项目采用）
 ├── pom.xml                               Maven 构建入口（单模块）
 ├── docs/                                 需求 / 详细设计 / 数据库与部署运维
 ├── script/
@@ -678,3 +681,47 @@ API Key 以 **AES-256-GCM** 加密入库（`v1:base64(iv|ct)`），主密钥来�
 | 提示词页编译失败 | `npm run build` 报 `Error parsing JavaScript expression: Unexpected token` | 模板里字面量 `{{var}}` 被 Vue 当成插值解析；改为 `varToken()` 拼接生成占位符 |
 | 页签样式互相污染 | 角色弹窗的「档案/属性/背包」页签与人物菜单的「人物档案/关系视图」共用 `character-tabs` 类，`margin-top` 被后者覆盖 | 弹窗页签改名 `character-asset-tabs` |
 | 属性数值改不动 | 同一次请求内先 wrapper 更新再 `updateById`，第二次因乐观锁版本已变而失败 | `updateInventory` 攒成一个 `LambdaUpdateWrapper` 一次 UPDATE（含 `clearQuantity`） |
+
+---
+
+## 9. 开源协议
+
+本项目以 **GNU Affero General Public License v3.0**（AGPL-3.0，或其更新版本）发布，协议全文见仓库根目录 [LICENSE](./LICENSE)。
+
+Copyright (C) 2026 Jiaqiong
+
+**为什么选 AGPL 而不是 MIT / Apache-2.0**：StoryForge 是一个可直接部署成公开网站的完整应用（前端、后端、数据库迁移、Docker 镜像、部署脚本都在同一个仓库里）。MIT / Apache-2.0 允许他人把代码改成闭源版本、部署成收费站点而不回馈任何修改；AGPL-3.0 的 §13「远程网络交互」条款补上了这个缺口——修改后的版本只要对外提供网络服务，就必须让使用者能够获取对应源码。自己部署、自己用、拿来学习，都不受任何额外约束。
+
+### 9.1 使用边界
+
+| 使用方式 | 是否允许 | 需要做什么 |
+|---|---|---|
+| 自行部署 / 内部使用 | 允许 | 保留版权与许可声明，不强制公开修改 |
+| 修改后自用 | 允许 | 同上 |
+| 分发源码、jar、桌面安装包、Docker 镜像 | 允许 | 随附完整对应源码与 LICENSE；修改过的文件需显著标注改动 |
+| 修改后部署为对外服务（哪怕只跑在自己服务器上） | 允许 | 依 §13 向所有使用者提供源码获取方式，且该源码同样以 AGPL-3.0 授权 |
+| 改造后闭源商用 / 提供闭源 SaaS | 不允许 | 与协议冲突，需另行取得作者书面授权 |
+
+其余要点：AGPL-3.0 含显式专利授权（§11）；不得在被许可作品上附加额外限制（§10）；不提供任何担保、作者不承担使用后果（§15–17）；分发时不得删除版权声明或更改协议名称。
+
+> 协议不可撤销：已经按 AGPL-3.0 发布的版本无法回溯收回，后续若要改为其他协议，只能对新的版本生效。
+
+### 9.2 部署者要做的合规动作（本项目已内置）
+
+AGPL-3.0 不是放一个 LICENSE 文件就够——对外提供网络服务的实例必须把「源码在哪」告诉使用者。本项目已经把入口做在代码里：
+
+| 位置 | 作用 |
+|---|---|
+| 登录页底部 | 「AGPL-3.0 协议开源 · 获取源码」链接 |
+| 顶栏用户菜单 | 「获取源码」「开源许可（AGPL-3.0）」两项 |
+| `web/src/config/about.ts` | `SOURCE_REPO_URL` / `LICENSE_URL` 常量，**二次开发者只改这里** |
+| `docker/Dockerfile`、`script/deploy/remote/Dockerfile` | OCI 标签 `org.opencontainers.image.licenses=AGPL-3.0-or-later` 与 `...image.source` 指向源码仓库 |
+| `pom.xml`、`web/package.json` | 声明 `AGPL-3.0`，供依赖分析工具识别 |
+
+本项目公开实例（[www.jq888.cn](https://www.jq888.cn)）的源码即本仓库，任何人可自由获取。若你把本项目改造成自己的站点对外服务，请把 `about.ts` 里的仓库地址换成你自己的公开仓库，否则不满足 §13。
+
+### 9.3 第三方组件
+
+`pom.xml` 与 `web/package.json` 中的第三方依赖各自沿用原协议（Spring Boot、MyBatis-Plus 等为 Apache-2.0；Vue、Element Plus、Vite 等为 MIT），本项目不对它们重新授权，也不改变它们原有的授权条件。整体分发这些组件时，需继续满足其各自的声明要求（保留版权与许可文本）。
+
+> 以上为便于理解的要点摘录，不构成法律意见；发生歧义时以 [LICENSE](./LICENSE) 英文原文为准。

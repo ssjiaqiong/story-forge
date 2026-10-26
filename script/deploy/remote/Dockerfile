@@ -37,7 +37,8 @@ LABEL org.opencontainers.image.title="StoryForge" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.vendor="jiaqiong" \
-      org.opencontainers.image.source="ccr.ccs.tencentyun.com/jiaqiong/story-forge"
+      org.opencontainers.image.licenses="AGPL-3.0-or-later" \
+      org.opencontainers.image.source="https://gitee.com/jiaqiong/story-forge"
 
 COPY app.jar /app/app.jar
 COPY start.sh /app/start.sh

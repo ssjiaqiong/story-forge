@@ -17,3 +17,6 @@
 *.ico   binary
 *.jar   binary
 *.zip   binary
+
+# 协议全文按官方原文保留（LF，不做任何换行转换或字符处理）
+LICENSE text eol=lf

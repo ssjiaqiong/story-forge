@@ -46,6 +46,14 @@
         title="系统已关闭自助注册"
         description="账号由超级管理员在「用户管理」中创建，首次登录需修改初始口令。"
       />
+
+      <!-- AGPL-3.0 §13：对外提供服务的实例须向使用者开放源码获取入口 -->
+      <div class="login-license">
+        本项目以
+        <a :href="LICENSE_URL" target="_blank" rel="noopener noreferrer">{{ LICENSE_NAME }}</a>
+        协议开源 ·
+        <a :href="SOURCE_REPO_URL" target="_blank" rel="noopener noreferrer">获取源码</a>
+      </div>
     </div>
   </div>
 </template>
@@ -56,6 +64,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import { LICENSE_NAME, LICENSE_URL, SOURCE_REPO_URL } from '@/config/about'
 
 const route = useRoute()
 const router = useRouter()
@@ -154,5 +163,21 @@ async function onSubmit() {
 
 .login-tip {
   margin-top: 20px;
+}
+
+.login-license {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--sf-text-regular);
+}
+
+.login-license a {
+  color: var(--sf-brand);
+  text-decoration: none;
+}
+
+.login-license a:hover {
+  text-decoration: underline;
 }
 </style>
