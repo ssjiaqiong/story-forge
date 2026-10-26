@@ -6,12 +6,21 @@ import java.nio.file.Path;
 import java.util.OptionalInt;
 
 /**
- * 数据根目录解析：把「所有可变状态」收敛到 exe 同级的 {@code data/} 下。
+ * 数据根目录解析：把「所有可变状态」收敛到同一个 {@code data/} 下。
  *
  * <p>不能依赖进程工作目录——从开始菜单、快捷方式或资源管理器双击启动时，CWD 是不确定的。
  * jpackage 打包的启动器会注入 {@code jpackage.app-path} 系统属性指向 exe 自身，
  * 这是唯一可靠的锚点。开发态（{@code java -jar}）没有该属性，回落到当前目录的 {@code ./data}，
  * 与既有行为完全一致。</p>
+ *
+ * <p>两种部署形态的数据位置不同（见 {@link #STORAGE_PROPERTY}）：</p>
+ * <ul>
+ *   <li><b>绿色版</b>（app-image / 解压即用）：{@code data/} 与 exe 同级，整个目录拷走即迁移；</li>
+ *   <li><b>安装版</b>（jpackage exe / 安装到 LocalAppData\Programs）：数据放
+ *       {@code %APPDATA%\StoryForge\data}，与安装目录分离——否则卸载程序会
+ *       连同书稿一起删掉（jpackage 的 per-user 安装目录正是 {@code %LOCALAPPDATA%\StoryForge}，
+ *       所以数据不能再放到 LocalAppData 下）。</li>
+ * </ul>
  *
  * <p>本类只在桌面 / SQLite 单机模式下由 {@link DesktopBootstrap#init(String[])} 调用，
  * PostgreSQL / MySQL 服务器模式下不会执行，服务端行为零变化。</p>
@@ -20,6 +29,12 @@ public final class AppHome {
 
     /** 数据根目录的系统属性名，application*.yml 通过 ${storyforge.home:./data} 引用。 */
     public static final String HOME_PROPERTY = "storyforge.home";
+
+    /**
+     * 数据位置模式：
+     * {@code portable}（默认，data 与 exe 同级）或 {@code user}（安装版，数据落用户目录）。
+     */
+    public static final String STORAGE_PROPERTY = "storyforge.storage";
 
     private static Path home;
 
@@ -32,15 +47,7 @@ public final class AppHome {
      * @return 数据根目录（……/data）
      */
     public static Path init() {
-        String appPath = System.getProperty("jpackage.app-path");
-        Path base;
-        if (appPath != null && !appPath.isBlank()) {
-            // jpackage 启动器注入：exe 的绝对路径，取父目录即应用根
-            base = Path.of(appPath).toAbsolutePath().normalize().getParent();
-        } else {
-            base = Path.of("").toAbsolutePath().normalize();
-        }
-        Path data = base.resolve("data");
+        Path data = resolveDataDir();
         home = data;
 
         System.setProperty(HOME_PROPERTY, data.toString());
@@ -61,6 +68,43 @@ public final class AppHome {
             throw new IllegalStateException("无法创建数据目录：" + data + "（请确认安装目录可写）", e);
         }
         return data;
+    }
+
+    /**
+     * 数据目录优先级：显式 {@code -Dstoryforge.home=...} &gt; {@code storyforge.storage}
+     * 指定的模式 &gt; exe 同级 {@code data/}。
+     */
+    private static Path resolveDataDir() {
+        String explicit = System.getProperty(HOME_PROPERTY);
+        if (explicit != null && !explicit.isBlank()) {
+            return Path.of(explicit).toAbsolutePath().normalize();
+        }
+        if ("user".equalsIgnoreCase(System.getProperty(STORAGE_PROPERTY))) {
+            return userDataRoot().resolve("data");
+        }
+        String appPath = System.getProperty("jpackage.app-path");
+        Path base;
+        if (appPath != null && !appPath.isBlank()) {
+            // jpackage 启动器注入：exe 的绝对路径，取父目录即应用根
+            base = Path.of(appPath).toAbsolutePath().normalize().getParent();
+        } else {
+            base = Path.of("").toAbsolutePath().normalize();
+        }
+        return base.resolve("data");
+    }
+
+    /** 安装版的用户数据根：Windows 为 %APPDATA%\StoryForge，其它平台为 ~/.storyforge。 */
+    private static Path userDataRoot() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("win")) {
+            // 刻意用 Roaming 而不是 LocalAppData：jpackage 的 per-user 安装目录就是
+            // %LOCALAPPDATA%\StoryForge，数据若放同处，卸载时会被一并删除。
+            String appData = System.getenv("APPDATA");
+            if (appData != null && !appData.isBlank()) {
+                return Path.of(appData, "StoryForge");
+            }
+        }
+        return Path.of(System.getProperty("user.home"), ".storyforge");
     }
 
     /** 数据根目录；{@link #init()} 之前调用返回 null。 */

@@ -242,27 +242,43 @@ docker compose up -d --build
 
 数据落在 `docker/data/`：`files/`（业务文件）、`pg/`（数据库）、`logs/`（应用日志）。
 
-### 4.3.1 Windows 桌面版（EXE，双击即用）
+### 4.3.1 Windows 桌面版（EXE 安装包 / 绿色版）
 
-桌面版把整套应用（含 JDK17 运行时）打包成**免安装、免 Java、免数据库**的绿色目录，
-数据库就是一个 SQLite 文件，适合本机单人创作。
+桌面版把整套应用（含 JDK17 运行时）打成**免 Java、免数据库**的可执行产物，
+数据库就是一个 SQLite 文件，适合本机单人创作。两种形态：
+
+| 形态 | 产物 | 数据位置 | 适用 |
+|---|---|---|---|
+| 安装包 | `dist\StoryForge-<版本>.exe` | `%APPDATA%\StoryForge\data` | 正式发布给最终用户 |
+| 绿色版 | `dist\StoryForge\` 目录 | exe 同级 `data\` | 便携、U 盘、免安装 |
 
 ```powershell
 # 生成图标（首次或改了图标后）
 .\script\gen-icon.ps1
 
-# 一键打包：前端 → static 合并 → Maven → jpackage，产出 dist\StoryForge\
-.\script\package-win.ps1            # 或 script\package-win.bat
+# 安装包（正式发布）：需要 WiX Toolset 3.x 提供 candle.exe / light.exe
+.\script\package-win.ps1 -Type exe -NoConsole -Version 1.0.0
+
+# 绿色版（默认）
+.\script\package-win.ps1
 ```
 
 | 参数 | 说明 |
 |---|---|
+| `-Type exe\|app-image` | `exe` 出安装包，`app-image`（默认）出绿色目录 |
 | `-Version 1.0.0` | 版本号，必须纯数字三段式（jpackage 拒绝 `-SNAPSHOT`） |
+| `-NoConsole` | 不显示控制台窗口（日志仍落 `data\logs\`）；正式发布建议加 |
+| `-WixDir` | WiX 3.x 目录（含 `candle.exe`）；不填则自动探测 |
+| `-UpgradeUuid` | 安装包升级标识；同一应用的所有版本必须一致，升级才能覆盖安装 |
 | `-SkipBuild` | 复用已有 `target\app.jar`，跳过前端 + Maven |
 | `-SkipWeb` | 跳过前端构建，只重新 Maven 打包 |
-| `-NoConsole` | 不显示控制台窗口（日志仍落 `data\logs\`） |
 
-**产物结构：**
+**安装包（`-Type exe`）**：当前用户安装、免管理员，可选安装目录，自动创建开始菜单项与桌面快捷方式，
+可从「应用和功能」卸载。数据刻意放在 `%APPDATA%\StoryForge\data`——jpackage 的 per-user
+安装目录正是 `%LOCALAPPDATA%\StoryForge`，数据若同处会被卸载程序一并删除（已实测）。
+备份该目录即完成迁移，删除它等于重置。
+
+**绿色版产物结构：**
 
 ```
 dist\StoryForge\
@@ -275,12 +291,14 @@ dist\StoryForge\
     └── .instance.lock  ← 单实例锁
 ```
 
-**运行行为：**
+**运行行为（两种形态一致）：**
 
-- 双击 `StoryForge.exe` → 自动选端口（8080 被占则顺延到 8089）→ 起服务 → 打开浏览器
+- 双击 exe → 自动选端口（8080 被占则顺延到 8089）→ 起服务 → 打开浏览器
   `http://127.0.0.1:8080`。
-- **单实例**：再双击一次不会起第二个进程，而是直接打开已运行的实例（读 `data\.instance.port`）。
-- 数据根由 exe 路径推导（`jpackage.app-path`），**与当前工作目录无关**，从快捷方式/开始菜单启动也正确。
+- **单实例**：再启动一次不会起第二个进程，而是直接打开已运行的实例（读 `data\.instance.port`）。
+- 数据根：绿色版由 exe 路径推导（`jpackage.app-path`），**与当前工作目录无关**；
+  安装版取 `%APPDATA%\StoryForge\data`（打包时传 `-Dstoryforge.storage=user`），
+  也可用 `-Dstoryforge.home=<目录>` 自定义。
 - 默认账号 `admin / Admin@123456`，首次登录强制改密。
 
 > 桌面模式判定：被打包（存在 `jpackage.app-path`）或 profile 含 `sqlite` 时，启动引导
