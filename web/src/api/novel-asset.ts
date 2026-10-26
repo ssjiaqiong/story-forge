@@ -1,6 +1,7 @@
 import { api } from './request'
 import type { CharacterDraft } from './bookshelf'
 import type { FactionVO } from './faction'
+import type { PageResult } from './novel'
 import type { SearchBundleVO } from './search'
 
 /** 章节关联事件（轻量） */
@@ -413,4 +414,49 @@ export function generateContent(chapterId: string, payload: ContentGeneratePaylo
 /** 按提示语结合作品设定与角色生成物品；单次最多 10 个，超时 5 分钟 */
 export function generateItems(novelId: string, payload: ItemGenerateRequest) {
   return api.post<ItemGenerateResultVO>(`/bookshelf/novels/${novelId}/items/generate`, payload, 300000)
+}
+
+/* ---------------- 章节正文历史版本 ---------------- */
+
+/** 历史版本列表项（不含正文） */
+export interface ChapterVersionVO {
+  id: string
+  versionNo: number
+  source: string
+  /** 来源中文名，后端已翻译，前端不再维护映射 */
+  sourceLabel: string
+  title?: string
+  wordCount: number
+  note?: string
+  createdAt: string
+}
+
+/** 单个历史版本全文 */
+export interface ChapterVersionDetailVO extends ChapterVersionVO {
+  content: string
+}
+
+/** 历史版本列表，按版本号倒序 */
+export function listChapterVersions(chapterId: string, page = 1, size = 20) {
+  return api.get<PageResult<ChapterVersionVO>>(`/bookshelf/chapters/${chapterId}/versions`, { page, size })
+}
+
+/** 历史版本条数，用于角标 */
+export function countChapterVersions(chapterId: string) {
+  return api.get<number>(`/bookshelf/chapters/${chapterId}/versions/count`)
+}
+
+/** 单版全文 */
+export function getChapterVersion(chapterId: string, versionId: string) {
+  return api.get<ChapterVersionDetailVO>(`/bookshelf/chapters/${chapterId}/versions/${versionId}`)
+}
+
+/** 回滚到该版本；回滚前的稿子会先存为新版本 */
+export function restoreChapterVersion(chapterId: string, versionId: string) {
+  return api.post<ChapterVO>(`/bookshelf/chapters/${chapterId}/versions/${versionId}/restore`, {}, 60000)
+}
+
+/** 删除历史版本，不影响当前正文 */
+export function deleteChapterVersion(chapterId: string, versionId: string) {
+  return api.delete<void>(`/bookshelf/chapters/${chapterId}/versions/${versionId}`)
 }

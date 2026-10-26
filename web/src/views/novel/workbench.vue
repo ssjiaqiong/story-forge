@@ -670,6 +670,7 @@
               <div class="editor-head">
                 <span class="editor-title">{{ editingChapter?.volumeTitle || '' }} 第 {{ editingChapter?.chapterNo }} 章</span>
                 <div class="editor-actions">
+                  <el-button size="small" :icon="Clock" @click="openVersionDrawer">历史</el-button>
                   <el-button size="small" :icon="MagicStick" :disabled="aiContentGenerating || contentLocked" @click="openAiContentDialog">
                     AI 写本章
                   </el-button>
@@ -2020,6 +2021,7 @@
     </el-dialog>
 
     <ChangeHistoryDrawer ref="historyDrawer" :novel-id="novelId" />
+    <ChapterVersionDrawer ref="versionDrawer" :chapter-id="activeChapterId" @restored="handleVersionRestored" />
     <ChapterReviseDialog
       v-model="reviseVisible"
       :chapter-id="reviseChapter?.chapterId || ''"
@@ -2041,7 +2043,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Calendar, ChatDotRound, Collection, Connection, DataAnalysis, Document, Download, EditPen, Files, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User } from '@element-plus/icons-vue'
+import { ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, EditPen, Files, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User } from '@element-plus/icons-vue'
 import {
   exportNovelTxt,
   getNovelDetail,
@@ -2054,6 +2056,7 @@ import type { NovelVO } from '@/api/novel'
 import RelationGraph from './components/RelationGraph.vue'
 import SearchSources from './components/SearchSources.vue'
 import ChangeHistoryDrawer from './components/ChangeHistoryDrawer.vue'
+import ChapterVersionDrawer from './components/ChapterVersionDrawer.vue'
 import ChapterReviseDialog from './components/ChapterReviseDialog.vue'
 import AgentPanel from './components/AgentPanel.vue'
 import {
@@ -2299,6 +2302,27 @@ const contentDirty = computed(() => {
 })
 /** 字数按汉字统计：标点、数字、字母不计 */
 const contentWords = computed(() => (contentDraft.value.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || []).length)
+
+/* ---------- 正文历史版本 ---------- */
+const versionDrawer = ref<InstanceType<typeof ChapterVersionDrawer> | null>(null)
+
+function openVersionDrawer() {
+  if (!activeChapterId.value) {
+    ElMessage.warning('先选一个章节')
+    return
+  }
+  // 对比基线用「已保存的正文」，编辑中未保存的改动不应该被当成当前稿
+  void versionDrawer.value?.open(editingChapter.value?.content || '')
+}
+
+function handleVersionRestored(chapter: ChapterVO) {
+  editingChapter.value = chapter
+  editingChapterTitle.value = chapter.title || ''
+  contentDraft.value = chapter.content || ''
+  contentStatus.value = chapter.status || 'DRAFT'
+  contentEditing.value = false
+  void loadChapters()
+}
 
 /* ---------- 分析 ---------- */
 const historyDrawer = ref<InstanceType<typeof ChangeHistoryDrawer> | null>(null)

@@ -29,6 +29,22 @@ public interface NovelAssetService {
 
     ChapterVO updateChapter(Long chapterId, ChapterRequest request);
 
+    /**
+     * 带来源的章节更新。
+     *
+     * <p>{@code source} 只影响历史版本上的来源标签（手动保存 / AI 写正文 / 批量连写 …），
+     * 由调用方在内部传入，不接受前端指定。</p>
+     */
+    ChapterVO updateChapter(Long chapterId, ChapterRequest request, String source);
+
+    /**
+     * 回滚到某个历史版本。
+     *
+     * <p>回滚前的当前稿会先存为新版本，所以可以再回滚回来；已标记「已完成」的章节也允许回滚
+     * （锁定保护只针对外部编辑入口，见 {@link #updateChapter(Long, ChapterRequest)}）。</p>
+     */
+    ChapterVO restoreVersion(Long chapterId, Long versionId);
+
     void deleteChapter(Long chapterId);
 
     List<TimelineVO> listTimeline(Long novelId);

@@ -99,6 +99,7 @@ public enum ErrorCode {
     FACTION_GENERATE_EMPTY(40059, "AI 没有生成可用的势力，请换一种描述再试", 400),
     AGENT_OPERATION_INVALID(40060, "智能助手返回了无法识别的修改指令", 400),
     CHAPTER_LOCKED(40061, "本章已标记为「已完成」，正文与标题不可修改；如需修改请先把状态改回草稿或写作中", 400),
+    CHAPTER_VERSION_NOT_FOUND(40062, "历史版本不存在或已被删除", 404),
 
     /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),

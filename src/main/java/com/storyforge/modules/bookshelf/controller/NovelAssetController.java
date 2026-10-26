@@ -1,8 +1,11 @@
 package com.storyforge.modules.bookshelf.controller;
 
+import com.storyforge.common.api.PageResult;
 import com.storyforge.common.api.R;
 import com.storyforge.common.ratelimit.RateLimit;
 import com.storyforge.modules.bookshelf.dto.ChapterRequest;
+import com.storyforge.modules.bookshelf.dto.ChapterVersionDetailVO;
+import com.storyforge.modules.bookshelf.dto.ChapterVersionVO;
 import com.storyforge.modules.bookshelf.dto.ChapterVO;
 import com.storyforge.modules.bookshelf.dto.CharacterGenerateRequest;
 import com.storyforge.modules.bookshelf.dto.CharacterGenerateResultVO;
@@ -28,6 +31,7 @@ import com.storyforge.modules.bookshelf.service.AiContentService;
 import com.storyforge.modules.bookshelf.service.AiEventService;
 import com.storyforge.modules.bookshelf.service.AiItemService;
 import com.storyforge.modules.bookshelf.service.AiOutlineService;
+import com.storyforge.modules.bookshelf.service.ChapterVersionService;
 import com.storyforge.modules.bookshelf.service.NovelAssetService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -40,6 +44,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -59,6 +64,7 @@ public class NovelAssetController {
     private final AiOutlineService aiOutlineService;
     private final AiContentService aiContentService;
     private final AiItemService aiItemService;
+    private final ChapterVersionService chapterVersionService;
 
     /* ---------------- 章节 ---------------- */
 
@@ -111,6 +117,48 @@ public class NovelAssetController {
     @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
     public R<Void> deleteChapter(@PathVariable Long id) {
         assetService.deleteChapter(id);
+        return R.ok();
+    }
+
+    /* ---------------- 章节正文历史版本 ---------------- */
+
+    @Operation(summary = "历史版本列表",
+            description = "按版本号倒序返回，**不含正文**；正文变化时才会产生版本（保存前的旧内容）")
+    @GetMapping("/chapters/{id}/versions")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 300, windowSeconds = 60)
+    public R<PageResult<ChapterVersionVO>> listVersions(@PathVariable Long id,
+                                                        @RequestParam(defaultValue = "1") long page,
+                                                        @RequestParam(defaultValue = "20") long size) {
+        return R.ok(chapterVersionService.list(id, page, size));
+    }
+
+    @Operation(summary = "历史版本数量", description = "前端角标用，避免为了显示条数拉整页数据")
+    @GetMapping("/chapters/{id}/versions/count")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 300, windowSeconds = 60)
+    public R<Long> countVersions(@PathVariable Long id) {
+        return R.ok(chapterVersionService.count(id));
+    }
+
+    @Operation(summary = "历史版本全文", description = "用于查看与对比当前正文")
+    @GetMapping("/chapters/{id}/versions/{versionId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 300, windowSeconds = 60)
+    public R<ChapterVersionDetailVO> getVersion(@PathVariable Long id, @PathVariable Long versionId) {
+        return R.ok(chapterVersionService.detail(id, versionId));
+    }
+
+    @Operation(summary = "回滚到历史版本",
+            description = "回滚前的当前稿会先存为新版本，可再回滚回来；已标记「已完成」的章节也允许回滚")
+    @PostMapping("/chapters/{id}/versions/{versionId}/restore")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 60, windowSeconds = 60)
+    public R<ChapterVO> restoreVersion(@PathVariable Long id, @PathVariable Long versionId) {
+        return R.ok(assetService.restoreVersion(id, versionId));
+    }
+
+    @Operation(summary = "删除历史版本", description = "只删历史，不影响当前正文")
+    @DeleteMapping("/chapters/{id}/versions/{versionId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
+    public R<Void> deleteVersion(@PathVariable Long id, @PathVariable Long versionId) {
+        chapterVersionService.delete(id, versionId);
         return R.ok();
     }
 

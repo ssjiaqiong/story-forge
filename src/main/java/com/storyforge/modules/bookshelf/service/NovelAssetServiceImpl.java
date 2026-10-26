@@ -23,6 +23,7 @@ import com.storyforge.modules.bookshelf.dto.TimelineVO;
 import com.storyforge.modules.bookshelf.entity.ChapterCharacterEntity;
 import com.storyforge.modules.bookshelf.entity.ChapterEntity;
 import com.storyforge.modules.bookshelf.entity.ChapterEventEntity;
+import com.storyforge.modules.bookshelf.entity.ChapterVersionEntity;
 import com.storyforge.modules.bookshelf.entity.CharacterEntity;
 import com.storyforge.modules.bookshelf.entity.CharacterRelationEntity;
 import com.storyforge.modules.bookshelf.entity.EventParticipantEntity;
@@ -116,6 +117,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     private final CharacterAttributeMapper characterAttributeMapper;
     private final CharacterInventoryMapper characterInventoryMapper;
     private final MasterOutlineMapper masterOutlineMapper;
+    private final ChapterVersionService chapterVersionService;
     private final ObjectMapper objectMapper;
 
     /* ------------------------------------------------------------------ */
@@ -183,13 +185,50 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ChapterVO updateChapter(Long chapterId, ChapterRequest request) {
+        return updateChapter(chapterId, request, ChapterVersionEntity.SOURCE_MANUAL, false, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ChapterVO updateChapter(Long chapterId, ChapterRequest request, String source) {
+        return updateChapter(chapterId, request, source, false, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ChapterVO restoreVersion(Long chapterId, Long versionId) {
+        requireChapter(chapterId);
+        ChapterVersionEntity version = chapterVersionService.require(chapterId, versionId);
+        if (version.getContent() == null || version.getContent().isBlank()) {
+            throw BizException.of(ErrorCode.CHAPTER_VERSION_NOT_FOUND, "该版本没有正文，无法回滚");
+        }
+        ChapterRequest request = new ChapterRequest();
+        request.setContent(version.getContent());
+        return updateChapter(chapterId, request, ChapterVersionEntity.SOURCE_RESTORE, true,
+                "回滚到第 " + version.getVersionNo() + " 版前的稿子");
+    }
+
+    /**
+     * 更新章节的唯一实现。
+     *
+     * <p>{@code allowLocked} 只给回滚用：定稿章节不让从外部改正文，但作者自己要能撤销误操作，
+     * 所以锁定判断在这里可以被内部绕过，且**不暴露成接口参数**。</p>
+     */
+    private ChapterVO updateChapter(Long chapterId, ChapterRequest request, String source,
+                                    boolean allowLocked, String snapshotNote) {
         ChapterEntity entity = requireChapter(chapterId);
         if (request == null) {
             throw BizException.of(ErrorCode.PARAM_INVALID, "请求内容不能为空");
         }
-        if (isChapterContentLocked(entity, request)) {
+        if (!allowLocked && isChapterContentLocked(entity, request)) {
             throw BizException.of(ErrorCode.CHAPTER_LOCKED);
         }
+        // 快照存的是「保存前」的内容，所以在改 entity 之前把旧值留一份
+        String oldContent = entity.getContent();
+        String oldTitle = entity.getTitle();
+        Integer oldWordCount = entity.getWordCount();
+        boolean contentChanging = request.getContent() != null
+                && !request.getContent().trim().equals(nullToEmpty(oldContent));
         if (request.getTitle() != null) {
             if (!hasText(request.getTitle())) {
                 throw BizException.of(ErrorCode.PARAM_INVALID, "章节标题不能为空");
@@ -224,6 +263,10 @@ public class NovelAssetServiceImpl implements NovelAssetService {
                     ? null : resolveMasterOutlineId(entity.getNovelId(), request.getMasterOutlineId()));
         }
         entity.setSortNo(entity.getVolumeNo() * CHAPTER_SORT_UNIT + entity.getChapterNo());
+        if (contentChanging) {
+            chapterVersionService.snapshot(beforeSnapshot(entity, oldTitle, oldContent, oldWordCount),
+                    source, snapshotNote);
+        }
         chapterMapper.updateById(entity);
         if (clearMasterOutline) {
             chapterMapper.update(null, Wrappers.<ChapterEntity>lambdaUpdate()
@@ -257,6 +300,18 @@ public class NovelAssetServiceImpl implements NovelAssetService {
         return value == null ? "" : value;
     }
 
+    /** 构造「保存前」的快照载体：只带快照需要的字段，避免把改过的值带进去。 */
+    private ChapterEntity beforeSnapshot(ChapterEntity entity, String title, String content, Integer wordCount) {
+        ChapterEntity before = new ChapterEntity();
+        before.setId(entity.getId());
+        before.setUserId(entity.getUserId());
+        before.setNovelId(entity.getNovelId());
+        before.setTitle(title);
+        before.setContent(content);
+        before.setWordCount(wordCount);
+        return before;
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteChapter(Long chapterId) {
@@ -267,6 +322,8 @@ public class NovelAssetServiceImpl implements NovelAssetService {
                 .eq(com.storyforge.modules.bookshelf.entity.ChapterAnalysisEntity::getChapterId, chapterId));
         changeHistoryMapper.delete(Wrappers.<com.storyforge.modules.bookshelf.entity.ChangeHistoryEntity>lambdaQuery()
                 .eq(com.storyforge.modules.bookshelf.entity.ChangeHistoryEntity::getChapterId, chapterId));
+        // 正文历史也挂在这一章上，章节没了历史就没有意义
+        chapterVersionService.deleteByChapter(chapterId);
         chapterMapper.deleteById(chapterId);
         recountNovel(entity.getNovelId());
     }

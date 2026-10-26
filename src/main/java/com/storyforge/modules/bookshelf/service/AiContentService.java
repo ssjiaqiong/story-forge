@@ -26,6 +26,7 @@ import com.storyforge.modules.bookshelf.dto.ItemVO;
 import com.storyforge.modules.bookshelf.dto.NovelDetailVO;
 import com.storyforge.modules.bookshelf.dto.SettingDocVO;
 import com.storyforge.modules.bookshelf.dto.TimelineVO;
+import com.storyforge.modules.bookshelf.entity.ChapterVersionEntity;
 import com.storyforge.modules.novel.dto.NovelVO;
 import com.storyforge.modules.search.dto.SearchBundleVO;
 import com.storyforge.modules.search.service.SearchPromptFormatter;
@@ -181,7 +182,7 @@ public class AiContentService {
         ChapterRequest save = new ChapterRequest();
         save.setContent(content);
         save.setStatus("WRITING");
-        ChapterVO saved = assetService.updateChapter(chapterId, save);
+        ChapterVO saved = assetService.updateChapter(chapterId, save, ChapterVersionEntity.SOURCE_AI_BODY);
 
         // 正文落库后再补建档案：这一章新出现的人 / 道具 / 组织，档案里有了，下一章写作与分析才接得上
         ArchiveBootstrap archive = bootstrapArchive(chapter.novelId(), detail, generated, endpoint, items, factions);
