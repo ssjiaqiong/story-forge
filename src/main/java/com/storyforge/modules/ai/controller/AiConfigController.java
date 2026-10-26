@@ -1,10 +1,13 @@
 package com.storyforge.modules.ai.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.storyforge.common.api.R;
 import com.storyforge.common.audit.Audit;
 import com.storyforge.common.ratelimit.RateLimit;
 import com.storyforge.infra.ai.AiTestResult;
 import com.storyforge.modules.ai.dto.AiConfigCreateRequest;
+import com.storyforge.modules.ai.dto.AiConfigExportPackage;
+import com.storyforge.modules.ai.dto.AiConfigImportResult;
 import com.storyforge.modules.ai.dto.AiConfigStatusRequest;
 import com.storyforge.modules.ai.dto.AiConfigUpdateRequest;
 import com.storyforge.modules.ai.dto.AiConfigVO;
@@ -12,9 +15,13 @@ import com.storyforge.modules.ai.dto.AiModelProbeRequest;
 import com.storyforge.modules.ai.dto.ImageProviderPresetVO;
 import com.storyforge.modules.ai.service.AiConfigService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -22,8 +29,11 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
@@ -37,7 +47,11 @@ import java.util.List;
 @RequiredArgsConstructor
 public class AiConfigController {
 
+    /** 导出文件名里的时间戳 */
+    private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+
     private final AiConfigService aiConfigService;
+    private final ObjectMapper objectMapper;
 
     @Operation(summary = "接口配置列表", description = "默认端点排在最前；API Key 仅返回掩码")
     @GetMapping
@@ -121,5 +135,34 @@ public class AiConfigController {
     @RateLimit(dimension = RateLimit.Dimension.USER, limit = 30, windowSeconds = 60)
     public R<List<String>> probeModels(@Valid @RequestBody AiModelProbeRequest request) {
         return R.ok(aiConfigService.probeModels(request));
+    }
+
+    @Operation(summary = "导出接口配置",
+            description = "把当前账号下的全部 AI 接口导出为 JSON 文件（含地址、模型、参数、附加请求头）。"
+                    + "includeApiKey=true 时包含 API Key 明文——文件等同于凭据，请妥善保管；"
+                    + "设为 false 则导出后需在目标站点重新填写密钥")
+    @GetMapping("/export")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 30, windowSeconds = 60)
+    public ResponseEntity<byte[]> export(
+            @Parameter(description = "是否包含 API Key 明文，默认 true")
+            @RequestParam(defaultValue = "true") boolean includeApiKey) throws Exception {
+        AiConfigExportPackage pkg = aiConfigService.exportPackage(includeApiKey);
+        byte[] body = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(pkg);
+        // 纯 ASCII 文件名，避免响应头编码问题
+        String filename = "storyforge-ai-configs-" + LocalDateTime.now().format(FILE_STAMP) + ".json";
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body);
+    }
+
+    @Operation(summary = "导入接口配置",
+            description = "把导出的 JSON 重建为当前账号下的接口：逐条校验、单条失败只跳过该条；"
+                    + "重名自动追加序号；密钥用本实例主密钥重新加密；不抢占已有的默认端点")
+    @PostMapping("/import")
+    @Audit(action = "AI_CONFIG_IMPORT", targetType = "AI_CONFIG")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 10, windowSeconds = 60)
+    public R<AiConfigImportResult> importConfigs(@RequestBody AiConfigExportPackage pkg) {
+        return R.ok(aiConfigService.importPackage(pkg));
     }
 }

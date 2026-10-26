@@ -1,4 +1,4 @@
-import api from '@/api/request'
+import api, { http } from '@/api/request'
 
 /** AI 接口配置（出参） */
 export interface AiConfigVO {
@@ -160,4 +160,71 @@ export function listSceneBindings() {
 
 export function saveSceneBindings(items: SceneBindingItem[]) {
   return api.put<void>('/scene-bindings', { items })
+}
+
+/* ---------- 导入 / 导出 ---------- */
+
+/** 导出包里的单条接口配置 */
+export interface AiConfigExportItem {
+  name: string
+  kind: 'TEXT' | 'IMAGE'
+  provider?: string
+  imageSize?: string
+  baseUrl: string
+  /** 明文密钥；导出时选择不含密钥则为空 */
+  apiKey?: string
+  apiKeyMask?: string
+  defaultModel: string
+  modelList?: string[]
+  timeoutMs?: number
+  temperature?: number
+  maxTokens?: number
+  topP?: number
+  extraHeaders?: string
+  enabled?: boolean
+  isDefault?: boolean
+  remark?: string
+}
+
+/** 导出包（导入的入参也是它） */
+export interface AiConfigExportPackage {
+  format?: string
+  formatVersion?: number
+  exportedAt?: string
+  total?: number
+  /** 文件里是否真的含 API Key 明文 */
+  containsApiKey?: boolean
+  site?: string
+  configs: AiConfigExportItem[]
+}
+
+/** 导入结果 */
+export interface AiConfigImportResult {
+  total: number
+  imported: number
+  skipped: number
+  withApiKey: number
+  /** 重命名明细，如「OpenAI → OpenAI（2）」 */
+  renamed: string[]
+  /** 跳过明细，如「测试接口：接口地址不能为空」 */
+  skippedItems: string[]
+  configs: AiConfigVO[]
+}
+
+/**
+ * 导出全部接口配置（JSON 文件流）。
+ *
+ * @param includeApiKey 是否包含 API Key 明文；包含时文件等同于凭据，需提示用户保管
+ */
+export async function exportAiConfigs(includeApiKey = true): Promise<Blob> {
+  const response = await http.get<Blob>('/ai-configs/export', {
+    params: { includeApiKey },
+    responseType: 'blob'
+  })
+  return response.data
+}
+
+/** 导入接口配置 JSON，返回导入统计与导入后的列表 */
+export function importAiConfigs(pkg: unknown) {
+  return api.post<AiConfigImportResult>('/ai-configs/import', pkg, 120000)
 }

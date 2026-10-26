@@ -12,6 +12,9 @@ import com.storyforge.infra.ai.AiEndpoint;
 import com.storyforge.infra.ai.AiTestResult;
 import com.storyforge.infra.ai.OpenAiClient;
 import com.storyforge.modules.ai.dto.AiConfigCreateRequest;
+import com.storyforge.modules.ai.dto.AiConfigExportItem;
+import com.storyforge.modules.ai.dto.AiConfigExportPackage;
+import com.storyforge.modules.ai.dto.AiConfigImportResult;
 import com.storyforge.modules.ai.dto.AiConfigUpdateRequest;
 import com.storyforge.modules.ai.dto.AiConfigVO;
 import com.storyforge.modules.ai.dto.AiModelProbeRequest;
@@ -28,11 +31,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * AI 接口配置服务实现。
@@ -58,6 +64,8 @@ public class AiConfigServiceImpl implements AiConfigService {
     /** 图像接口默认超时：出图普遍比对话慢，至少给 60 秒 */
     private static final int DEFAULT_IMAGE_TIMEOUT_MS = 180_000;
     private static final String SIZE_PATTERN = "^\\d{3,4}x\\d{3,4}$";
+    /** 单次导入上限：正常用户不会有几十个接口，超限多半是选错文件 */
+    private static final int MAX_IMPORT_COUNT = 200;
 
     private final AiConfigMapper aiConfigMapper;
     private final SceneBindingMapper sceneBindingMapper;
@@ -112,6 +120,219 @@ public class AiConfigServiceImpl implements AiConfigService {
     @Override
     public List<ImageProviderPresetVO> presets() {
         return Arrays.stream(ImageProvider.values()).map(ImageProviderPresetVO::from).toList();
+    }
+
+    /* ================================================================== */
+    /* 导入 / 导出                                                         */
+    /* ================================================================== */
+
+    @Override
+    public AiConfigExportPackage exportPackage(boolean includeApiKey) {
+        List<AiConfigEntity> entities = aiConfigMapper.selectList(Wrappers.<AiConfigEntity>lambdaQuery()
+                .orderByDesc(AiConfigEntity::getIsDefault)
+                .orderByAsc(AiConfigEntity::getCreatedAt));
+
+        AiConfigExportPackage pkg = new AiConfigExportPackage();
+        pkg.setExportedAt(LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        boolean anyKey = false;
+        for (AiConfigEntity entity : entities) {
+            AiConfigExportItem item = new AiConfigExportItem();
+            item.setName(entity.getName());
+            item.setKind(normalizeKind(entity.getKind()));
+            item.setProvider(entity.getProvider() == null ? ImageProvider.OPENAI.name() : entity.getProvider());
+            item.setImageSize(entity.getImageSize());
+            item.setBaseUrl(entity.getBaseUrl());
+            item.setApiKeyMask(entity.getApiKeyMask());
+            item.setDefaultModel(entity.getDefaultModel());
+            item.setModelList(parseModelList(entity.getModelList()));
+            item.setTimeoutMs(entity.getTimeoutMs());
+            item.setTemperature(entity.getTemperature());
+            item.setMaxTokens(entity.getMaxTokens());
+            item.setTopP(entity.getTopP());
+            item.setExtraHeaders(entity.getExtraHeaders());
+            item.setEnabled(entity.getEnabled());
+            item.setIsDefault(entity.getIsDefault());
+            item.setRemark(entity.getRemark());
+            if (includeApiKey) {
+                // 解密失败（主密钥更换等）时退化为 null，不阻断整体导出
+                String plain = revealApiKey(entity);
+                item.setApiKey(plain);
+                anyKey = anyKey || (plain != null && !plain.isBlank());
+            }
+            pkg.getConfigs().add(item);
+        }
+        pkg.setTotal(pkg.getConfigs().size());
+        pkg.setContainsApiKey(includeApiKey && anyKey);
+        log.info("[ai-config] exported {} configs userId={} withApiKey={}",
+                pkg.getTotal(), UserContextHolder.requireUserId(), pkg.getContainsApiKey());
+        return pkg;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AiConfigImportResult importPackage(AiConfigExportPackage pkg) {
+        if (pkg == null) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "导入内容为空");
+        }
+        if (pkg.getFormat() != null && !AiConfigExportPackage.FORMAT.equals(pkg.getFormat())) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "文件格式不匹配，请选择「AI 接口配置」导出的 JSON 文件");
+        }
+        if (pkg.getFormatVersion() != null && pkg.getFormatVersion() > AiConfigExportPackage.FORMAT_VERSION) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "文件来自更高版本（v" + pkg.getFormatVersion()
+                    + "），当前实例只支持 v" + AiConfigExportPackage.FORMAT_VERSION);
+        }
+        List<AiConfigExportItem> items = pkg.getConfigs();
+        if (items == null || items.isEmpty()) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "文件里没有任何接口配置");
+        }
+        if (items.size() > MAX_IMPORT_COUNT) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "一次最多导入 " + MAX_IMPORT_COUNT + " 个接口");
+        }
+
+        // 目标端已有的默认端点：导入不抢占，只有该类型完全没有默认时才补位
+        Set<String> kindsWithDefault = new HashSet<>();
+        aiConfigMapper.selectList(Wrappers.<AiConfigEntity>lambdaQuery()
+                        .eq(AiConfigEntity::getIsDefault, true))
+                .forEach(entity -> kindsWithDefault.add(normalizeKind(entity.getKind())));
+
+        // 已占用的名称：库内已有的 + 本次导入过程中新增的，都要避开
+        Set<String> takenNames = new HashSet<>();
+        aiConfigMapper.selectList(Wrappers.<AiConfigEntity>lambdaQuery())
+                .forEach(entity -> takenNames.add(entity.getName()));
+
+        AiConfigImportResult result = new AiConfigImportResult();
+        result.setTotal(items.size());
+        Map<String, Long> firstEnabled = new LinkedHashMap<>();
+        Map<String, Long> explicitDefault = new LinkedHashMap<>();
+
+        for (int i = 0; i < items.size(); i++) {
+            AiConfigExportItem item = items.get(i);
+            String fallbackName = "导入接口 " + (i + 1);
+            String originalName = item == null || item.getName() == null ? "" : item.getName().trim();
+            try {
+                AiConfigEntity entity = buildImportedEntity(item, fallbackName, takenNames);
+                aiConfigMapper.insert(entity);
+                takenNames.add(entity.getName());
+                result.setImported(result.getImported() + 1);
+                if (entity.getApiKeyCipher() != null && !entity.getApiKeyCipher().isBlank()) {
+                    result.setWithApiKey(result.getWithApiKey() + 1);
+                }
+                if (!originalName.isEmpty() && !originalName.equals(entity.getName())) {
+                    result.getRenamed().add(originalName + " → " + entity.getName());
+                }
+                if (Boolean.TRUE.equals(entity.getEnabled())) {
+                    String kind = entity.getKind();
+                    firstEnabled.putIfAbsent(kind, entity.getId());
+                    if (item != null && Boolean.TRUE.equals(item.getIsDefault())) {
+                        explicitDefault.putIfAbsent(kind, entity.getId());
+                    }
+                }
+            } catch (BizException ex) {
+                // 单条不合法只跳过该条，不连累其余条目
+                result.setSkipped(result.getSkipped() + 1);
+                result.getSkippedItems().add(displayName(originalName, fallbackName) + "：" + ex.getMessage());
+            } catch (RuntimeException ex) {
+                log.warn("[ai-config] import item failed name={}: {}", originalName, ex.getMessage());
+                result.setSkipped(result.getSkipped() + 1);
+                result.getSkippedItems().add(displayName(originalName, fallbackName) + "：数据异常（" + ex.getMessage() + "）");
+            }
+        }
+
+        // 收尾：给「导入前就没有默认端点」的类型补一个默认，保证有可用端点
+        for (Map.Entry<String, Long> entry : firstEnabled.entrySet()) {
+            String kind = entry.getKey();
+            if (kindsWithDefault.contains(kind)) {
+                continue;
+            }
+            Long pick = explicitDefault.getOrDefault(kind, entry.getValue());
+            applyDefault(pick);
+            kindsWithDefault.add(kind);
+            log.info("[ai-config] import promoted default id={} kind={}", pick, kind);
+        }
+
+        log.info("[ai-config] imported {}/{} configs userId={} withApiKey={} renamed={} skipped={}",
+                result.getImported(), result.getTotal(), UserContextHolder.requireUserId(),
+                result.getWithApiKey(), result.getRenamed().size(), result.getSkipped());
+        result.setConfigs(list());
+        return result;
+    }
+
+    /** 由导出项重建实体，逐字段走与手工新增相同的规整逻辑。 */
+    private AiConfigEntity buildImportedEntity(AiConfigExportItem item, String fallbackName, Set<String> takenNames) {
+        if (item == null) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "条目为空");
+        }
+        String baseUrl = normalizeBaseUrl(item.getBaseUrl());
+        if (baseUrl.isBlank()) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "接口地址不能为空");
+        }
+        String model = blankToNull(item.getDefaultModel());
+        if (model == null) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "默认模型不能为空");
+        }
+        AiConfigKind kind = parseKind(item.getKind());
+        // 未知平台回落 OpenAI 兼容协议，避免整条导入失败
+        ImageProvider provider = kind == AiConfigKind.IMAGE
+                ? parseProvider(item.getProvider(), false)
+                : ImageProvider.OPENAI;
+        String imageSize = kind == AiConfigKind.IMAGE
+                ? normalizeImageSize(item.getImageSize(), provider)
+                : null;
+
+        String rawName = blankToNull(item.getName());
+        String name = uniqueName(rawName == null ? fallbackName : rawName, takenNames);
+
+        AiConfigEntity entity = new AiConfigEntity();
+        entity.setUserId(UserContextHolder.requireUserId());
+        entity.setName(name);
+        entity.setKind(kind.name());
+        entity.setProvider(provider.name());
+        entity.setImageSize(imageSize);
+        entity.setBaseUrl(baseUrl);
+        // 不含密钥的导出包：保持「未配置密钥」状态，由用户导入后自行填写
+        String apiKey = item.getApiKey() == null ? "" : item.getApiKey().trim();
+        if (!apiKey.isEmpty()) {
+            entity.setApiKeyCipher(secretCipher.encrypt(apiKey));
+            entity.setApiKeyMask(secretCipher.mask(apiKey));
+        }
+        entity.setDefaultModel(model);
+        entity.setModelList(item.getModelList() == null || item.getModelList().isEmpty()
+                ? null
+                : writeJson(item.getModelList()));
+        entity.setTimeoutMs(item.getTimeoutMs() == null
+                ? (kind == AiConfigKind.IMAGE ? DEFAULT_IMAGE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS)
+                : item.getTimeoutMs());
+        entity.setTemperature(item.getTemperature() == null ? DEFAULT_TEMPERATURE : item.getTemperature());
+        entity.setMaxTokens(item.getMaxTokens() == null ? DEFAULT_MAX_TOKENS : item.getMaxTokens());
+        entity.setTopP(item.getTopP() == null ? DEFAULT_TOP_P : item.getTopP());
+        entity.setExtraHeaders(normalizeExtraHeaders(item.getExtraHeaders()));
+        entity.setEnabled(item.getEnabled() == null || item.getEnabled());
+        // 默认位统一在导入收尾时处理，避免中途反复清空
+        entity.setIsDefault(false);
+        entity.setRemark(blankToNull(item.getRemark()));
+        entity.setDeleted(0);
+        entity.setVersion(0);
+        return entity;
+    }
+
+    /** 名称去重：与库内或本次已导入的重名时追加「（2）（3）……」，不报错中断。 */
+    private String uniqueName(String base, Set<String> taken) {
+        // 列宽 64，留出「（999）」5 个字符的空间
+        String normalized = base.length() > 58 ? base.substring(0, 58) : base;
+        if (!taken.contains(normalized)) {
+            return normalized;
+        }
+        for (int i = 2; i <= 999; i++) {
+            String candidate = normalized + "（" + i + "）";
+            if (!taken.contains(candidate)) {
+                return candidate;
+            }
+        }
+        throw BizException.of(ErrorCode.PARAM_INVALID, "名称「" + base + "」重复过多，无法自动编号");
+    }
+
+    private String displayName(String originalName, String fallbackName) {
+        return originalName == null || originalName.isEmpty() ? fallbackName : originalName;
     }
 
     @Override

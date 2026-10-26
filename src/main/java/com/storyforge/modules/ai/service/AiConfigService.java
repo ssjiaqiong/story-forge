@@ -2,6 +2,8 @@ package com.storyforge.modules.ai.service;
 
 import com.storyforge.infra.ai.AiTestResult;
 import com.storyforge.modules.ai.dto.AiConfigCreateRequest;
+import com.storyforge.modules.ai.dto.AiConfigExportPackage;
+import com.storyforge.modules.ai.dto.AiConfigImportResult;
 import com.storyforge.modules.ai.dto.AiConfigUpdateRequest;
 import com.storyforge.modules.ai.dto.AiConfigVO;
 import com.storyforge.modules.ai.dto.AiModelProbeRequest;
@@ -45,4 +47,18 @@ public interface AiConfigService {
      * <p>传了 {@code id} 时顺带把结果写回该配置的模型缓存。</p>
      */
     List<String> probeModels(AiModelProbeRequest request);
+
+    /**
+     * 导出当前用户的全部接口配置。
+     *
+     * @param includeApiKey 是否包含 API Key 明文（密文无法跨站点解密，不导出明文则导入后需重填）
+     */
+    AiConfigExportPackage exportPackage(boolean includeApiKey);
+
+    /**
+     * 导入接口配置：逐条重建，重名自动追加序号，密钥重新加密落库。
+     *
+     * <p>不抢占已有默认端点——只有当某个类型当前没有任何默认端点时，才用包内标记默认的那条补位。</p>
+     */
+    AiConfigImportResult importPackage(AiConfigExportPackage pkg);
 }

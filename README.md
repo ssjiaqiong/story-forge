@@ -99,7 +99,7 @@ app/                                      ★ 工程根目录（后端 + 前端 
 | 关闭自助注册（`POST /api/auth/register` 固定返回 30030） | ✅ 已完成 |
 | 首次登录强制改密（拦截器 + 前端路由守卫） | ✅ 已完成 |
 | 超管「用户管理」：列表 / 详情 / 新建 / 编辑 / 启停 / 重置口令 / 删除 / 恢复 | ✅ 已完成 |
-| 设置中心「AI 接口管理」：端点增删改查 / 默认端点 / 启停 / 连通性测试 / 模型拉取 | ✅ 已完成 |
+| 设置中心「AI 接口管理」：端点增删改查 / 默认端点 / 启停 / 连通性测试 / 模型拉取 / **配置导入导出** | ✅ 已完成 |
 | AI 提示词：按 RTCO 结构统一（角色—任务—上下文—输出—约束），设定类要求规则与代价、人物要求欲望与缺陷、正文要求场景推进与反 AI 味；灵感内置技能支持旧版自动升级 | ✅ 已完成 |
 | 设置中心「联网搜索」：免密钥搜索源（必应/DuckDuckGo/维基百科）+ SearXNG / Tavily / Serper，默认源、启停、测试与试搜；事件/大纲/正文三场景独立绑定 | ✅ 已完成 |
 | 设置中心「场景绑定」：20 个 AI 场景的端点与模型参数覆盖（只登记已有调用的场景，不放占位项；蓝图四段可各绑不同模型） | ✅ 已完成 |
@@ -557,9 +557,19 @@ java -jar target/app.jar
 | PUT | `/{id}/status` | 启用 / 停用；停用默认端点会同时取消默认标记 |
 | POST | `/{id}/test` | 连通性测试，返回 `{ok, latencyMs, model, reply, totalTokens, error}` |
 | GET | `/{id}/models` | 拉取 `{baseUrl}/models` 并缓存 |
+| GET | `/export?includeApiKey=true` | **导出全部接口配置**为 JSON 附件（`storyforge-ai-config-export` v1）；含明文密钥时文件等同于凭据 |
+| POST | `/import` | **导入接口配置**：逐条校验、单条失败只跳过该条；重名自动追加「（2）」；密钥用本实例主密钥重新加密；不抢占已有默认端点 |
 
 约定：`baseUrl` 需包含版本段（如 `https://api.openai.com/v1`），系统在其后追加 `/chat/completions` 与 `/models`。
 API Key 以 **AES-256-GCM** 加密入库（`v1:base64(iv|ct)`），主密钥来自 `STORYFORGE_SECRET_KEY`。
+
+导入导出的边界：
+
+- 搬运 `name/kind/provider/imageSize/baseUrl/apiKey/defaultModel/modelList/timeoutMs/temperature/maxTokens/topP/extraHeaders/enabled/isDefault/remark`；
+- **不搬运** `id`、创建/更新时间、最近测试结果（都是本实例的运行痕迹）；
+- 密钥密文绑定站点主密钥，跨站点无法解密，因此导出的是解密后的明文，导入时用目标站点密钥重新加密；
+- `includeApiKey=false` 导出的包不含密钥，导入后这些接口显示「未配置密钥」，需编辑补填；
+- 单次导入上限 200 条，限流 10 次/分钟。
 
 ### 6.4 场景绑定 `/api/scene-bindings`（登录用户，按用户隔离）
 

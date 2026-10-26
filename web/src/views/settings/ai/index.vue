@@ -15,6 +15,15 @@
           <div class="toolbar">
             <el-button type="primary" :icon="Plus" @click="openCreate">新增接口</el-button>
             <el-button :icon="Refresh" @click="loadConfigs">刷新</el-button>
+            <el-button :icon="Download" :loading="exporting" @click="onExport">导出</el-button>
+            <el-button :icon="Upload" :loading="importing" @click="pickImportFile">导入</el-button>
+            <input
+              ref="importInputRef"
+              type="file"
+              accept="application/json,.json"
+              class="hidden-input"
+              @change="onImportFileChange"
+            />
             <div class="toolbar-right">
               <span class="text-muted">共 {{ configs.length }} 个接口，默认端点：{{ defaultConfigName }}</span>
             </div>
@@ -398,18 +407,58 @@
         <el-button type="primary" @click="testVisible = false">知道了</el-button>
       </template>
     </el-dialog>
+
+    <!-- ==================== 导入结果 ==================== -->
+    <el-dialog v-model="importVisible" title="导入结果" width="620px">
+      <el-alert
+        v-if="importResult"
+        :type="importResult.imported > 0 ? 'success' : 'warning'"
+        :closable="false"
+        show-icon
+        :title="importSummary"
+      />
+
+      <div v-if="importResult?.renamed.length" class="result-block">
+        <div class="result-title">名称已自动调整（避免重名）</div>
+        <ul class="result-list">
+          <li v-for="(item, index) in importResult.renamed" :key="`renamed-${index}`">{{ item }}</li>
+        </ul>
+      </div>
+
+      <div v-if="importResult?.skippedItems.length" class="result-block">
+        <div class="result-title">已跳过 {{ importResult.skippedItems.length }} 条</div>
+        <ul class="result-list">
+          <li v-for="(item, index) in importResult.skippedItems" :key="`skipped-${index}`">{{ item }}</li>
+        </ul>
+      </div>
+
+      <el-alert
+        v-if="importResult && importResult.imported > importResult.withApiKey"
+        class="result-tip"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="`有 ${importResult.imported - importResult.withApiKey} 个接口没有密钥（导出时未包含），请编辑后补填 API Key 再使用`"
+      />
+
+      <template #footer>
+        <el-button type="primary" @click="importVisible = false">知道了</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormItemRule, type FormRules } from 'element-plus'
-import { Check, Plus, Refresh } from '@element-plus/icons-vue'
+import { Check, Download, Plus, Refresh, Upload } from '@element-plus/icons-vue'
 import {
   changeAiConfigEnabled,
   createAiConfig,
   deleteAiConfig,
+  exportAiConfigs,
   getAiConfig,
+  importAiConfigs,
   listAiConfigs,
   listImageProviderPresets,
   listSceneBindings,
@@ -418,6 +467,7 @@ import {
   setDefaultAiConfig,
   testAiConfig,
   updateAiConfig,
+  type AiConfigImportResult,
   type AiConfigPayload,
   type AiConfigVO,
   type AiTestResult,
@@ -479,6 +529,129 @@ async function loadPresets() {
   } catch {
     // 预设只用于预填表单，失败不影响主流程
     presets.value = []
+  }
+}
+
+/* ---------------- 导入 / 导出 ---------------- */
+
+const exporting = ref(false)
+const importing = ref(false)
+const importInputRef = ref<HTMLInputElement | null>(null)
+const importVisible = ref(false)
+const importResult = ref<AiConfigImportResult | null>(null)
+
+const importSummary = computed(() => {
+  const result = importResult.value
+  if (!result) {
+    return ''
+  }
+  const parts = [`共 ${result.total} 条`, `成功导入 ${result.imported} 条`]
+  if (result.skipped > 0) {
+    parts.push(`跳过 ${result.skipped} 条`)
+  }
+  if (result.renamed.length > 0) {
+    parts.push(`${result.renamed.length} 条已重命名`)
+  }
+  return parts.join('，')
+})
+
+/** blob 响应里的错误体是 JSON 文件流，需要自己读出来才能拿到后端提示 */
+async function readBlobError(error: unknown): Promise<string> {
+  const data = (error as { response?: { data?: unknown } })?.response?.data
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text()) as { message?: string }
+      if (parsed?.message) {
+        return parsed.message
+      }
+    } catch {
+      // 不是 JSON 就退回通用文案
+    }
+  }
+  return (error as Error)?.message || '导出失败'
+}
+
+async function onExport() {
+  if (!configs.value.length) {
+    ElMessage.warning('当前没有可导出的接口配置')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '导出文件包含 API Key 明文，等同于账号凭据。请勿通过聊天工具、邮件或公共网盘传输，用完及时删除。',
+      '导出接口配置',
+      { type: 'warning', confirmButtonText: '确认导出', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  exporting.value = true
+  try {
+    const blob = await exportAiConfigs(true)
+    const now = new Date()
+    const stamp = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+      '-',
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+      String(now.getSeconds()).padStart(2, '0')
+    ].join('')
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `storyforge-ai-configs-${stamp}.json`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    ElMessage.success(`已导出 ${configs.value.length} 个接口配置`)
+  } catch (error) {
+    ElMessage.error(await readBlobError(error))
+  } finally {
+    exporting.value = false
+  }
+}
+
+function pickImportFile() {
+  importInputRef.value?.click()
+}
+
+async function onImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) {
+    return
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    ElMessage.error('文件超过 2MB，请确认选择的是接口配置导出的 JSON')
+    return
+  }
+  importing.value = true
+  try {
+    const text = await file.text()
+    let pkg: unknown
+    try {
+      pkg = JSON.parse(text)
+    } catch {
+      ElMessage.error('文件不是合法的 JSON')
+      return
+    }
+    const result = await importAiConfigs(pkg)
+    configs.value = result.configs
+    importResult.value = result
+    importVisible.value = true
+    if (result.imported > 0) {
+      ElMessage.success(`已导入 ${result.imported} 个接口`)
+    } else {
+      ElMessage.warning('没有导入任何接口，请查看跳过原因')
+    }
+  } catch (error) {
+    ElMessage.error((error as Error).message || '导入失败')
+  } finally {
+    importing.value = false
   }
 }
 
@@ -940,6 +1113,34 @@ onMounted(async () => {
   font-size: 12px;
   line-height: 1.7;
   color: var(--sf-text-regular);
+}
+
+.hidden-input {
+  display: none;
+}
+
+.result-block {
+  margin-top: 14px;
+}
+
+.result-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.result-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--sf-text-regular);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.result-tip {
+  margin-top: 14px;
 }
 
 :deep(.el-result) {
