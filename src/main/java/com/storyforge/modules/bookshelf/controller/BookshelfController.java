@@ -14,9 +14,12 @@ import com.storyforge.modules.bookshelf.dto.NovelDetailVO;
 import com.storyforge.modules.bookshelf.dto.NovelEditRequest;
 import com.storyforge.modules.bookshelf.dto.NovelExportPackage;
 import com.storyforge.modules.bookshelf.dto.TxtExportOptions;
+import com.storyforge.modules.bookshelf.dto.WriteTaskRequest;
+import com.storyforge.modules.bookshelf.dto.WriteTaskVO;
 import com.storyforge.modules.bookshelf.service.BlueprintQuestionService;
 import com.storyforge.modules.bookshelf.service.BlueprintTaskService;
 import com.storyforge.modules.bookshelf.service.BookshelfService;
+import com.storyforge.modules.bookshelf.service.ChapterWriteTaskService;
 import com.storyforge.modules.bookshelf.service.NovelTransferService;
 import com.storyforge.modules.bookshelf.service.NovelTxtExportService;
 import com.storyforge.modules.novel.dto.NovelVO;
@@ -57,6 +60,7 @@ public class BookshelfController {
     private final BlueprintQuestionService blueprintQuestionService;
     private final NovelTransferService novelTransferService;
     private final NovelTxtExportService novelTxtExportService;
+    private final ChapterWriteTaskService chapterWriteTaskService;
     private final ObjectMapper objectMapper;
 
     @Operation(summary = "建书前的信息追问",
@@ -91,6 +95,32 @@ public class BookshelfController {
     @RateLimit(dimension = RateLimit.Dimension.USER, limit = 600, windowSeconds = 60)
     public R<BlueprintTaskVO> blueprintTaskStatus(@PathVariable String taskId) {
         return R.ok(blueprintTaskService.status(taskId, UserContextHolder.requireUserId()));
+    }
+
+    /* ---------------- 批量连写 N 章 ---------------- */
+
+    @Operation(summary = "启动批量连写任务",
+            description = "从指定章节起串行写 N 章（每章都会读到前面刚写完的正文与新补的档案）；返回 taskId 供轮询。同一时间每个用户只能有一个进行中的连写任务")
+    @PostMapping("/novels/{novelId}/write-tasks")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 10, windowSeconds = 60)
+    public R<WriteTaskVO> startWriteTask(@PathVariable Long novelId,
+                                         @Valid @RequestBody(required = false) WriteTaskRequest request) {
+        return R.ok(chapterWriteTaskService.start(novelId, request, UserContextHolder.requireUserId()));
+    }
+
+    @Operation(summary = "查询批量连写进度", description = "返回已写章数、进度、逐章状态清单与累计字数")
+    @GetMapping("/write-tasks/{taskId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 600, windowSeconds = 60)
+    public R<WriteTaskVO> writeTaskStatus(@PathVariable String taskId) {
+        return R.ok(chapterWriteTaskService.status(taskId, UserContextHolder.requireUserId()));
+    }
+
+    @Operation(summary = "停止批量连写",
+            description = "置停止标记，任务会在写完当前章后停下；已经写完的章节保留，未开始的章节不再写")
+    @DeleteMapping("/write-tasks/{taskId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 60, windowSeconds = 60)
+    public R<WriteTaskVO> cancelWriteTask(@PathVariable String taskId) {
+        return R.ok(chapterWriteTaskService.cancel(taskId, UserContextHolder.requireUserId()));
     }
 
     @Operation(summary = "生成小说蓝图",

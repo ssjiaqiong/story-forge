@@ -643,9 +643,49 @@
           </div>
           <div class="panel-actions">
             <el-button :icon="Refresh" :loading="chapterLoading" circle @click="loadChapters" />
+            <el-button :icon="Edit" :disabled="writeTaskRunning" @click="openWriteTaskDialog">连写 N 章</el-button>
             <el-button type="primary" :icon="Plus" @click="openChapterDialog()">新增章节</el-button>
           </div>
         </header>
+
+        <div v-if="writeTask" class="write-task-bar">
+          <template v-if="writeTaskRunning">
+            <span class="stream-dot" />
+            <strong class="stream-label">正在连写</strong>
+            <span class="stream-meta">
+              <template v-if="writeTask.currentChapterNo">正在写第 {{ writeTask.currentChapterNo }} 章 · </template>
+              已完成 {{ writeTask.done }}/{{ writeTask.total }} 章 · 累计 {{ writeTask.writtenWords || 0 }} 字
+            </span>
+            <span class="stream-spacer" />
+            <el-button size="small" :icon="VideoPause" @click="stopWriteTask">停止</el-button>
+          </template>
+          <template v-else>
+            <span class="stream-label" :class="{ 'is-failed': writeTask.failed > 0 }">
+              连写{{ writeTask.status === 'CANCELLED' ? '已停止' : '完成' }}：成功 {{ writeTask.succeeded }} 章
+              / 跳过 {{ writeTask.skipped }} 章 / 失败 {{ writeTask.failed }} 章，共 {{ writeTask.writtenWords || 0 }} 字
+            </span>
+            <span v-if="writeTask.message" class="stream-meta">{{ writeTask.message }}</span>
+            <span class="stream-spacer" />
+            <el-button size="small" @click="writeTask = null">收起</el-button>
+          </template>
+        </div>
+        <p v-if="writeTask && !writeTaskRunning && writeTask.errorMessage" class="write-task-error">
+          {{ writeTask.errorMessage }}
+        </p>
+
+        <div v-if="writeTask && writeTask.chapters.length" class="write-task-list">
+          <span
+            v-for="item in writeTask.chapters"
+            :key="item.chapterId"
+            class="write-task-item"
+            :class="'is-' + (item.status || '').toLowerCase()"
+            :title="item.error || item.warning || ''"
+          >
+            第 {{ item.chapterNo }} 章
+            <em>{{ writeItemLabel(item.status) }}</em>
+            <i v-if="item.wordCount"> · {{ item.wordCount }} 字</i>
+          </span>
+        </div>
 
         <div class="content-layout">
           <div class="content-list">
@@ -1335,6 +1375,78 @@
       <template #footer>
         <el-button @click="aiContentDialog.visible = false">取消</el-button>
         <el-button type="primary" :disabled="contentStreaming" @click="submitAiContent">开始写</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量连写弹窗 -->
+    <el-dialog v-model="writeTaskDialog.visible" title="连写 N 章" width="620px" destroy-on-close>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="ai-input-note"
+        title="从所选章节起按顺序连写，每章都会读到前面刚写完的正文与新补建的档案，所以剧情能自然接上。默认跳过「已完成」的章节。"
+      />
+      <el-form label-width="96px">
+        <el-form-item label="从第几章">
+          <el-select v-model="writeTaskDialog.fromChapterId" class="w-full" placeholder="选择起始章节">
+            <el-option
+              v-for="chapter in chapters"
+              :key="chapter.id"
+              :value="chapter.id"
+              :label="`第 ${chapter.chapterNo} 章 ${chapter.title || ''}（${chapterStatusLabel(chapter.status)}）`"
+            />
+          </el-select>
+        </el-form-item>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="连写章数">
+              <el-input-number v-model="writeTaskDialog.count" :min="1" :max="10" controls-position="right" class="w-full" />
+              <span class="ai-hint">单次最多 10 章</span>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="每章字数">
+              <el-input-number
+                v-model="writeTaskDialog.targetWords"
+                :min="300"
+                :max="6000"
+                :step="100"
+                :value-on-clear="null"
+                controls-position="right"
+                class="w-full"
+              />
+              <span class="ai-hint">清空则取本书近期章节的平均字数</span>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="统一要求">
+          <el-input
+            v-model="writeTaskDialog.requirement"
+            type="textarea"
+            :rows="3"
+            maxlength="2000"
+            show-word-limit
+            placeholder="例如：保持冷硬文风，每章结尾留一个钩子，不要提前揭开档案的来源。"
+          />
+        </el-form-item>
+        <el-form-item label="遇到失败">
+          <el-radio-group v-model="writeTaskDialog.stopOnError">
+            <el-radio-button :value="true">立即停止</el-radio-button>
+            <el-radio-button :value="false">跳过继续</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="已完成章节">
+          <el-radio-group v-model="writeTaskDialog.skipDone">
+            <el-radio-button :value="true">跳过</el-radio-button>
+            <el-radio-button :value="false">重写</el-radio-button>
+          </el-radio-group>
+          <span class="ai-hint">重写的章节会被新稿覆盖，覆盖前的旧稿会存进正文历史</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="writeTaskDialog.visible = false">取消</el-button>
+        <el-button type="primary" @click="submitWriteTask">开始连写</el-button>
       </template>
     </el-dialog>
 
@@ -2053,7 +2165,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, EditPen, Files, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
+import { ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, Edit, EditPen, Files, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
 import {
   exportNovelTxt,
   getNovelDetail,
@@ -2110,6 +2222,10 @@ import {
   getChapter,
   listChapters,
   listItems,
+  cancelWriteTask,
+  getWriteTask,
+  startWriteTask,
+  type WriteTaskVO,
   listMasterOutlines,
   listRelations,
   listTimeline,
@@ -3235,6 +3351,7 @@ onBeforeUnmount(() => {
   stopAiEventTimer()
   stopAiOutlineTimer()
   stopAiContentTimer()
+  stopWriteTaskPolling()
   // 离开页面就别让后台继续生成：断开连接后服务端会放弃落库
   contentAbort?.abort()
   stopAiItemTimer()
@@ -3383,6 +3500,140 @@ const aiContentGenerating = ref(false)
 const aiContentElapsed = ref(0)
 let aiContentTimer: number | undefined
 const contentSearch = ref<SearchBundleVO | null>(null)
+
+/* ---------- 批量连写 N 章 ---------- */
+const writeTaskDialog = reactive({
+  visible: false,
+  fromChapterId: '',
+  count: 3,
+  targetWords: null as number | null,
+  requirement: '',
+  stopOnError: true,
+  skipDone: true
+})
+/** 最近一次连写任务的快照；null 表示当前没有要展示的任务 */
+const writeTask = ref<WriteTaskVO | null>(null)
+const writeTaskRunning = computed(() => writeTask.value?.status === 'RUNNING')
+let writeTaskTimer: number | undefined
+
+function openWriteTaskDialog() {
+  if (!chapters.value.length) {
+    ElMessage.warning('这本书还没有章节，先新增章节再连写')
+    return
+  }
+  writeTaskDialog.fromChapterId = activeChapterId.value || chapters.value[0].id
+  writeTaskDialog.count = 3
+  writeTaskDialog.targetWords = null
+  writeTaskDialog.requirement = ''
+  writeTaskDialog.stopOnError = true
+  writeTaskDialog.skipDone = true
+  writeTaskDialog.visible = true
+}
+
+async function submitWriteTask() {
+  if (!novelId.value || !writeTaskDialog.fromChapterId) {
+    return
+  }
+  try {
+    const task = await startWriteTask(novelId.value, {
+      fromChapterId: writeTaskDialog.fromChapterId,
+      count: writeTaskDialog.count,
+      targetWords: writeTaskDialog.targetWords ?? undefined,
+      requirement: writeTaskDialog.requirement.trim() || undefined,
+      stopOnError: writeTaskDialog.stopOnError,
+      skipDone: writeTaskDialog.skipDone
+    })
+    writeTask.value = task
+    writeTaskDialog.visible = false
+    startWriteTaskPolling()
+  } catch (error) {
+    ElMessage.error((error as Error).message || '连写任务启动失败')
+  }
+}
+
+/** 800ms 轮询：与蓝图任务同一节奏，进程重启会丢任务（内存态），用户重新发起即可 */
+function startWriteTaskPolling() {
+  stopWriteTaskPolling()
+  writeTaskTimer = window.setInterval(() => {
+    void pollWriteTask()
+  }, 800)
+}
+
+function stopWriteTaskPolling() {
+  if (writeTaskTimer) {
+    window.clearInterval(writeTaskTimer)
+    writeTaskTimer = undefined
+  }
+}
+
+async function pollWriteTask() {
+  const taskId = writeTask.value?.taskId
+  if (!taskId) {
+    stopWriteTaskPolling()
+    return
+  }
+  try {
+    writeTask.value = await getWriteTask(taskId)
+  } catch {
+    // 任务过期或进程重启：停在最后一次快照上，不再重试
+    stopWriteTaskPolling()
+    return
+  }
+  if (!writeTaskRunning.value) {
+    stopWriteTaskPolling()
+    await afterWriteTaskFinished()
+  }
+}
+
+async function afterWriteTaskFinished() {
+  await loadChapters()
+  const task = writeTask.value
+  if (!task) {
+    return
+  }
+  if (task.failed > 0) {
+    ElMessage.warning(`连写结束：成功 ${task.succeeded} 章，失败 ${task.failed} 章`)
+  } else if (task.status === 'CANCELLED') {
+    ElMessage.info(`已停止，已写完 ${task.succeeded} 章`)
+  } else {
+    ElMessage.success(`连写完成：${task.succeeded} 章，共 ${task.writtenWords || 0} 字${task.skipped ? `，跳过 ${task.skipped} 章已完成` : ''}`)
+  }
+  // 正在编辑的章节可能被连写改写过，重新拉一次正文避免本地基准过期
+  if (editingChapter.value && !contentEditing.value) {
+    try {
+      const detail = await getChapter(editingChapter.value.id)
+      editingChapter.value = detail
+      contentDraft.value = detail.content || ''
+      contentStatus.value = detail.status || 'DRAFT'
+    } catch {
+      /* 拉不到就保持现状，用户刷新即可 */
+    }
+  }
+}
+
+async function stopWriteTask() {
+  const taskId = writeTask.value?.taskId
+  if (!taskId) {
+    return
+  }
+  try {
+    writeTask.value = await cancelWriteTask(taskId)
+    ElMessage.info('已请求停止，当前这一章写完后会停下')
+  } catch (error) {
+    ElMessage.error((error as Error).message || '停止失败')
+  }
+}
+
+function writeItemLabel(status?: string) {
+  switch (status) {
+    case 'RUNNING': return '正在写'
+    case 'SUCCEEDED': return '已写完'
+    case 'FAILED': return '失败'
+    case 'SKIPPED': return '已完成，跳过'
+    case 'CANCELLED': return '已停止'
+    default: return '排队中'
+  }
+}
 
 /* ---------- 正文流式生成 ---------- */
 /** 正在逐字推流：编辑区只读、工具栏按钮全部让位给「停止」 */
@@ -5417,6 +5668,79 @@ function roleType(value?: string) {
   color: var(--sf-text-muted);
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* 批量连写：状态条沿用流式的观感，颜色按状态切换 */
+.write-task-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 6px;
+  background: var(--el-color-primary-light-9);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.write-task-bar .stream-label.is-failed {
+  color: var(--el-color-danger);
+}
+
+.write-task-error {
+  margin: 0 0 8px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.write-task-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.write-task-item {
+  padding: 3px 9px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 999px;
+  background: var(--sf-surface, transparent);
+  color: var(--sf-text-muted);
+  font-size: 12px;
+}
+
+.write-task-item em {
+  font-style: normal;
+  font-weight: 600;
+}
+
+.write-task-item i {
+  font-style: normal;
+}
+
+.write-task-item.is-running {
+  border-color: var(--el-color-primary-light-5);
+  color: var(--sf-brand);
+}
+
+.write-task-item.is-succeeded {
+  border-color: var(--el-color-success-light-5);
+  color: var(--el-color-success);
+}
+
+.write-task-item.is-failed {
+  border-color: var(--el-color-danger-light-5);
+  color: var(--el-color-danger);
+}
+
+.write-task-item.is-skipped {
+  color: var(--sf-text-muted);
+  opacity: 0.75;
 }
 
 @media (max-width: 1100px) {

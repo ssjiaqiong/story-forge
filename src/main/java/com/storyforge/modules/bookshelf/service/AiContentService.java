@@ -154,9 +154,15 @@ public class AiContentService {
      * 不能让作者辛苦等来的一章因为一个档案字段不合法而一起回滚。</p>
      */
     public ContentGenerateResultVO generate(Long chapterId, ContentGenerateRequest request) {
-        GenContext ctx = prepare(chapterId, request, null);
-        ChatResult reply = chat(ctx.endpoint(), ctx.systemPrompt(), ctx.userPrompt());
-        return persist(ctx, reply.content(), reply.model());
+        return generate(chapterId, request, ChapterVersionEntity.SOURCE_AI_BODY, null);
+    }
+
+    /**
+     * 批量连写模式下写一章：正文与单章完全一致，只有版本快照的来源不同（
+     * {@link ChapterVersionEntity#SOURCE_BATCH}），这样作者在历史里能一眼分清哪几版是连写留的。
+     */
+    public ContentGenerateResultVO generateBatch(Long chapterId, ContentGenerateRequest request) {
+        return generate(chapterId, request, ChapterVersionEntity.SOURCE_BATCH, null);
     }
 
     /**
@@ -177,14 +183,22 @@ public class AiContentService {
                 List.of(ChatMessage.system(ctx.systemPrompt()), ChatMessage.user(ctx.userPrompt())),
                 listener::onDelta);
         if (!streamed.empty()) {
-            return persist(ctx, streamed.content(), streamed.model());
+            return persist(ctx, streamed.content(), streamed.model(), ChapterVersionEntity.SOURCE_AI_BODY);
         }
 
         log.info("[ai-content] 上游未返回流式增量，降级为同步请求 chapterId={} model={}",
                 chapterId, ctx.endpoint().model());
         ChatResult reply = chat(ctx.endpoint(), ctx.systemPrompt(), ctx.userPrompt());
         listener.onDelta(reply.content());
-        return persist(ctx, reply.content(), reply.model());
+        return persist(ctx, reply.content(), reply.model(), ChapterVersionEntity.SOURCE_AI_BODY);
+    }
+
+    /** 同步路径统一入口：{@code source} 决定这一版历史记成什么来源。 */
+    private ContentGenerateResultVO generate(Long chapterId, ContentGenerateRequest request,
+                                             String source, StreamListener listener) {
+        GenContext ctx = prepare(chapterId, request, listener);
+        ChatResult reply = chat(ctx.endpoint(), ctx.systemPrompt(), ctx.userPrompt());
+        return persist(ctx, reply.content(), reply.model(), source);
     }
 
     /**
@@ -245,7 +259,7 @@ public class AiContentService {
     }
 
     /** 收尾：清洗文本 → 落库（先写版本快照）→ 档案补建 → 组装结果。 */
-    private ContentGenerateResultVO persist(GenContext ctx, String raw, String model) {
+    private ContentGenerateResultVO persist(GenContext ctx, String raw, String model, String source) {
         String generated = cleanGenerated(raw);
         if (!hasText(generated)) {
             throw BizException.of(ErrorCode.CONTENT_GENERATE_EMPTY);
@@ -258,8 +272,7 @@ public class AiContentService {
         ChapterRequest save = new ChapterRequest();
         save.setContent(content);
         save.setStatus("WRITING");
-        ChapterVO saved = assetService.updateChapter(
-                ctx.chapterId(), save, ChapterVersionEntity.SOURCE_AI_BODY);
+        ChapterVO saved = assetService.updateChapter(ctx.chapterId(), save, source);
 
         // 正文落库后再补建档案：这一章新出现的人 / 道具 / 组织，档案里有了，下一章写作与分析才接得上
         ArchiveBootstrap archive = bootstrapArchive(ctx.chapter().novelId(), ctx.detail(), generated,

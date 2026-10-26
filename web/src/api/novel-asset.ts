@@ -410,6 +410,76 @@ export function generateContent(chapterId: string, payload: ContentGeneratePaylo
 }
 
 /* ------------------------------------------------------------------ */
+/* 批量连写 N 章                                                      */
+/* ------------------------------------------------------------------ */
+
+/** 单章在连写任务里的状态 */
+export type WriteTaskChapterStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'SKIPPED'
+  | 'CANCELLED'
+
+export interface WriteTaskChapterVO {
+  chapterId: string
+  chapterNo: number
+  title?: string
+  status?: WriteTaskChapterStatus | string
+  wordCount?: number
+  warning?: string
+  error?: string
+}
+
+export interface WriteTaskVO {
+  taskId: string
+  novelId: string
+  /** RUNNING / SUCCEEDED / PARTIAL / FAILED / CANCELLED */
+  status: string
+  total: number
+  done: number
+  percent: number
+  currentChapterNo?: number
+  currentTitle?: string
+  stepLabel?: string
+  writtenWords?: number
+  succeeded: number
+  failed: number
+  skipped: number
+  chapters: WriteTaskChapterVO[]
+  message?: string
+  errorMessage?: string
+  startedAt?: number
+  finishedAt?: number
+}
+
+export interface WriteTaskPayload {
+  fromChapterId?: string
+  fromChapterNo?: number
+  /** 1~10 */
+  count?: number
+  /** 300~6000，留空取本书近期章节平均字数 */
+  targetWords?: number | null
+  requirement?: string
+  stopOnError?: boolean
+  skipDone?: boolean
+  useSearch?: boolean
+}
+
+export function startWriteTask(novelId: string, payload: WriteTaskPayload) {
+  return api.post<WriteTaskVO>(`/bookshelf/novels/${novelId}/write-tasks`, payload)
+}
+
+export function getWriteTask(taskId: string) {
+  return api.get<WriteTaskVO>(`/bookshelf/write-tasks/${taskId}`)
+}
+
+export function cancelWriteTask(taskId: string) {
+  return api.delete<WriteTaskVO>(`/bookshelf/write-tasks/${taskId}`)
+}
+
+/* ------------------------------------------------------------------ */
 /* 流式写正文                                                          */
 /* ------------------------------------------------------------------ */
 
