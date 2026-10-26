@@ -1,0 +1,163 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain,text/css,application/javascript
+
+spring:
+  application:
+    name: storyforge
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+  # ============ 数据库：PostgreSQL（默认）/ MySQL / SQLite 三选一 ============
+  # 切换方式见 application-mysql.yml / application-sqlite.yml：
+  #   SPRING_PROFILES_ACTIVE=mysql  → MySQL 8.0.13+
+  #   SPRING_PROFILES_ACTIVE=sqlite → SQLite 3.35+（桌面单机版）
+  # 此处是 PostgreSQL 的默认值，被上面两个 profile 整体覆盖。
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:storyforge}}
+    username: ${DB_USER:storyforge}
+    password: ${DB_PASSWORD:storyforge}
+    driver-class-name: ${DB_DRIVER:org.postgresql.Driver}
+    hikari:
+      pool-name: storyforge-pool
+      maximum-pool-size: ${DB_POOL_MAX:10}
+      minimum-idle: 2
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  # ============ 迁移：Flyway，禁止手工改表 ============
+  # 每种数据库一份基线，位于 db/migration/{postgresql,mysql,sqlite}/。
+  # MySQL / SQLite 两份由 script/db/gen-baseline.mjs 从 PostgreSQL 版派生，禁止手工编辑。
+  # 已有库（历史记录曾为 V1..V26）在历史表被重置后按 baseline-version=1 接管，
+  # 基线脚本不会在其上重复执行；全新库则正常执行基线。后续变更新增 V2、V3……
+  flyway:
+    enabled: true
+    locations: ${DB_MIGRATION_LOCATION:classpath:db/migration/postgresql}
+    baseline-on-migrate: true
+    baseline-version: 1
+    table: flyway_schema_history
+
+  jackson:
+    default-property-inclusion: non_null
+    time-zone: GMT+8
+    date-format: yyyy-MM-dd HH:mm:ss
+
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 50MB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: false
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    call-setters-on-nulls: true
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+  global-config:
+    banner: false
+    db-config:
+      id-type: assign_id
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+storyforge:
+  jwt:
+    issuer: storyforge
+    # 生产环境必须通过环境变量注入，长度 ≥ 32 字节
+    secret: ${STORYFORGE_JWT_SECRET:storyforge-dev-only-jwt-secret-key-change-me-in-production}
+    access-token-ttl: 30m
+    refresh-token-ttl: 7d
+
+  security:
+    # 需求约束：关闭自助注册，账号只能由超级管理员创建
+    registration-enabled: ${STORYFORGE_REGISTRATION_ENABLED:false}
+    default-initial-password: ${STORYFORGE_DEFAULT_PASSWORD:Story@123456}
+    # 同源部署留空；本地前后端分离调试可填 http://localhost:5173
+    cors-allowed-origins: []
+
+  admin:
+    username: ${STORYFORGE_ADMIN_USERNAME:admin}
+    password: ${STORYFORGE_ADMIN_PASSWORD:Admin@123456}
+    nickname: 超级管理员
+    force-change-password: ${STORYFORGE_ADMIN_FORCE_CHANGE:true}
+
+  # 本地文件存储：容器内通过 volume 挂载宿主机目录；桌面版（sqlite profile）下
+  # storyforge.home 指向 exe 同级的 data/，PG/MySQL 模式未设置该属性时回退 ./data
+  storage:
+    root: ${STORYFORGE_FILE_ROOT:${storyforge.home:./data}/files}
+
+  # 小说封面图片目录（与普通文件分开，便于单独挂载与备份）
+  # 文件相对路径规则：user_id/novel_id/{uuid}.jpg
+  cover:
+    root: ${STORYFORGE_COVER_ROOT:${storyforge.home:./data}/covers}
+
+  # 用户级数据隔离：业务表登记后自动追加 user_id 条件
+  data-permission:
+    managed-tables:
+      - t_ai_config
+      - t_scene_binding
+      - t_inspiration_skill
+      - t_inspiration_session
+      - t_inspiration_message
+      - t_novel
+      - t_setting_doc
+      - t_character
+      - t_chapter
+      - t_chapter_character
+      - t_chapter_event
+      - t_timeline_event
+      - t_item
+      - t_character_relation
+      - t_event_participant
+      - t_faction
+      - t_faction_member
+      - t_search_config
+      - t_search_scene
+      - t_book_digest
+      - t_chapter_analysis
+      - t_change_history
+      - t_character_attribute
+      - t_character_inventory
+      - t_prompt_template
+      - t_ai_usage
+      - t_novel_cover
+      - t_novel_agent_session
+      - t_novel_agent_message
+      - t_master_outline
+
+  # 敏感字段加密主密钥（AI API Key 等）。生产必须通过环境变量注入且不得随意更换，
+  # 更换后已落库的密文将无法解密。
+  crypto:
+    secret: ${STORYFORGE_SECRET_KEY:storyforge-dev-only-crypto-secret-change-me-in-production}
+
+  ratelimit:
+    enabled: true
+
+logging:
+  level:
+    root: info
+    com.storyforge: info

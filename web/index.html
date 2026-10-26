@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StoryForge · AI 长篇小说创作平台</title>
+    <script>
+      // 首屏防闪白：在任何样式/脚本加载前确定主题类
+      (function () {
+        try {
+          var saved = localStorage.getItem('storyforge.theme')
+          var dark = saved === 'dark'
+          if (saved === 'system' || !saved) {
+            dark = window.matchMedia('(prefers-color-scheme: dark)').matches && saved === 'system'
+          }
+          if (dark) {
+            document.documentElement.classList.add('dark')
+            document.documentElement.style.colorScheme = 'dark'
+            document.documentElement.style.background = '#14161a'
+          }
+        } catch (e) {
+          /* 隐私模式下 localStorage 不可用，忽略 */
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

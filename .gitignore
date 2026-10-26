@@ -1,0 +1,40 @@
+# ===== 后端 =====
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.jar
+*.war
+
+# 日志与本地数据
+logs/
+data/
+*.log
+*.log.gz
+
+# ===== 前端 =====
+web/node_modules/
+web/dist/
+web/.vite/
+web/*.tsbuildinfo
+
+# 前端构建产物拷入后端静态资源时产生
+src/main/resources/static/
+
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+
+# ===== 桌面版（jpackage）打包产物 =====
+build/
+dist/
+*.err
+
+# ===== 部署环境配置：真实值不提交，模板见 script/deploy/server.env.example =====
+script/deploy/server.env

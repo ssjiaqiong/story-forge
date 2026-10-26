@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.storyforge.modules.dashboard.mapper.DashboardMapper">
+
+    <!--
+      取时间列的日期部分。PostgreSQL / MySQL 都用 CAST(... AS DATE)，
+      SQLite 没有原生时间类型（列是 yyyy-MM-dd HH:mm:ss.SSS 文本），用 substr 截前 10 位，
+      字典序即日期序，结果同为 yyyy-MM-dd。
+    -->
+    <sql id="dateOf">
+        <choose>
+            <when test="_databaseId == 'sqlite'">substr(${col}, 1, 10)</when>
+            <otherwise>CAST(${col} AS DATE)</otherwise>
+        </choose>
+    </sql>
+
+    <!-- 小说状态分布：数量 + 字数 + 章节数，一次分组查完 -->
+    <select id="countNovelByStatus"
+            resultType="com.storyforge.modules.dashboard.dto.DashboardOverviewVO$StatusAgg">
+        SELECT status                         AS status,
+               COUNT(*)                       AS cnt,
+               COALESCE(SUM(word_count), 0)   AS words,
+               COALESCE(SUM(chapter_count), 0) AS chapters
+        FROM t_novel
+        WHERE deleted = 0
+        GROUP BY status
+    </select>
+
+    <!-- 章节状态分布 -->
+    <select id="countChapterByStatus"
+            resultType="com.storyforge.modules.dashboard.dto.DashboardOverviewVO$StatusAgg">
+        SELECT status                       AS status,
+               COUNT(*)                     AS cnt,
+               COALESCE(SUM(word_count), 0) AS words,
+               0                            AS chapters
+        FROM t_chapter
+        WHERE deleted = 0
+        GROUP BY status
+    </select>
+
+    <!-- 每日写作量：按章节最后编辑日归集，同一章改多次只计最后一次 -->
+    <select id="writingByDay"
+            resultType="com.storyforge.modules.dashboard.dto.DashboardOverviewVO$TrendPoint">
+        SELECT <include refid="dateOf"><property name="col" value="updated_at"/></include>     AS day,
+               COUNT(*)                     AS chapters,
+               COALESCE(SUM(word_count), 0) AS words
+        FROM t_chapter
+        WHERE deleted = 0
+          AND updated_at &gt;= #{from}
+        GROUP BY <include refid="dateOf"><property name="col" value="updated_at"/></include>
+    </select>
+
+    <!-- 每日 token 消耗 -->
+    <select id="usageByDay"
+            resultType="com.storyforge.modules.dashboard.dto.DashboardOverviewVO$TrendPoint">
+        SELECT <include refid="dateOf"><property name="col" value="created_at"/></include>       AS day,
+               COUNT(*)                       AS calls,
+               COALESCE(SUM(total_tokens), 0) AS tokens
+        FROM t_ai_usage
+        WHERE created_at &gt;= #{from}
+        GROUP BY <include refid="dateOf"><property name="col" value="created_at"/></include>
+    </select>
+
+    <!-- 区间内各场景用量：先按 token 排，token 都取不到（网关不返回 usage）时按调用次数排 -->
+    <select id="usageByScene"
+            resultType="com.storyforge.modules.dashboard.dto.DashboardOverviewVO$SceneUsage">
+        SELECT scene                          AS scene,
+               COUNT(*)                       AS calls,
+               COALESCE(SUM(total_tokens), 0) AS tokens
+        FROM t_ai_usage
+        WHERE created_at &gt;= #{from}
+        GROUP BY scene
+        ORDER BY tokens DESC, calls DESC
+    </select>
+
+    <!-- 今日 / 本月 / 累计用量，单行多列，避免多次往返 -->
+    <select id="usageTotals"
+            resultType="com.storyforge.modules.dashboard.dto.DashboardOverviewVO$AiStats">
+        SELECT
+            COALESCE(SUM(CASE WHEN created_at &gt;= #{todayStart} THEN total_tokens ELSE 0 END), 0)      AS todayTokens,
+            COALESCE(SUM(CASE WHEN created_at &gt;= #{todayStart} THEN 1 ELSE 0 END), 0)                  AS todayCalls,
+            COALESCE(SUM(CASE WHEN created_at &gt;= #{todayStart} THEN prompt_tokens ELSE 0 END), 0)      AS todayPromptTokens,
+            COALESCE(SUM(CASE WHEN created_at &gt;= #{todayStart} THEN completion_tokens ELSE 0 END), 0)  AS todayCompletionTokens,
+            COALESCE(SUM(CASE WHEN created_at &gt;= #{todayStart} AND success = 0 THEN 1 ELSE 0 END), 0)  AS todayFailed,
+            COALESCE(SUM(CASE WHEN created_at &gt;= #{monthStart} THEN total_tokens ELSE 0 END), 0)      AS monthTokens,
+            COALESCE(SUM(CASE WHEN created_at &gt;= #{monthStart} THEN 1 ELSE 0 END), 0)                  AS monthCalls,
+            COALESCE(SUM(total_tokens), 0)                                                                AS totalTokens,
+            COUNT(*)                                                                                      AS totalCalls,
+            MAX(created_at)                                                                               AS lastCalledAt
+        FROM t_ai_usage
+    </select>
+
+</mapper>

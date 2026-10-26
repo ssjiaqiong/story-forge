@@ -1,0 +1,14 @@
+# 生产环境（容器内）
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    root: info
+    com.storyforge: info
+
+management:
+  endpoint:
+    health:
+      show-details: never

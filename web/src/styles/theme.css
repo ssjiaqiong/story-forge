@@ -1,0 +1,119 @@
+/**
+ * 主题变量：浅色（默认）/ 深色（html.dark）。
+ *
+ * 约定：
+ * - 所有自定义样式只允许使用这里的语义变量，不要再写死颜色；
+ * - Element Plus 组件的暗色由 element-plus/theme-chalk/dark/css-vars.css 负责，
+ *   这里只需要保证自定义容器（页面底、卡片、侧栏、编辑区）跟着变。
+ */
+:root {
+  --sf-brand: #3b6ef6;
+  --sf-brand-strong: #2f5fe0;
+  --sf-brand-weak: rgba(59, 110, 246, 0.08);
+  --sf-brand-weak-strong: rgba(59, 110, 246, 0.16);
+
+  --sf-bg-page: #f5f7fa;
+  --sf-bg-card: #ffffff;
+  --sf-bg-elevated: #ffffff;
+  --sf-bg-subtle: #f7f9fc;
+  --sf-bg-hover: #f0f2f5;
+  --sf-bg-input: #ffffff;
+  --sf-bg-tint: #f2f5ff;
+  --sf-bg-tint-strong: #e8efff;
+  --sf-bg-success: #eaf7ef;
+  --sf-bg-danger: #fff4f4;
+  --sf-editor-bg: #ffffff;
+
+  --sf-text-primary: #1f2329;
+  --sf-text-regular: #4e5969;
+  --sf-text-muted: #86909c;
+  --sf-text-success: #2f7d4f;
+  --sf-text-warning: #b45309;
+  --sf-text-danger: #c45656;
+
+  --sf-border: #e4e7ed;
+  --sf-border-strong: #d4d7de;
+  --sf-border-danger: #fbdcdc;
+  --sf-shadow: rgba(0, 0, 0, 0.04);
+  --sf-shadow-strong: rgba(0, 0, 0, 0.08);
+
+  /* 侧栏固定深底，两套主题都是深色，深色下再压暗一档 */
+  --sf-aside-bg: #1f2733;
+  --sf-aside-text: #c8d0dc;
+
+  /* 关系连线图 */
+  --sf-graph-bg: #ffffff;
+  --sf-graph-node: #ffffff;
+  --sf-graph-node-stroke: #c9d3e3;
+  --sf-graph-edge: #b9c3d3;
+  --sf-graph-label: #1f2329;
+  --sf-graph-label-bg: #ffffff;
+}
+
+html.dark {
+  --sf-brand: #5b8bff;
+  --sf-brand-strong: #7aa1ff;
+  --sf-brand-weak: rgba(91, 139, 255, 0.14);
+  --sf-brand-weak-strong: rgba(91, 139, 255, 0.22);
+
+  --sf-bg-page: #14161a;
+  --sf-bg-card: #1d2026;
+  --sf-bg-elevated: #23262d;
+  --sf-bg-subtle: #1a1d22;
+  --sf-bg-hover: #262a31;
+  --sf-bg-input: #15181d;
+  --sf-bg-tint: rgba(91, 139, 255, 0.12);
+  --sf-bg-tint-strong: rgba(91, 139, 255, 0.2);
+  --sf-bg-success: rgba(82, 196, 122, 0.14);
+  --sf-bg-danger: rgba(245, 108, 108, 0.14);
+  --sf-editor-bg: #1a1d22;
+
+  --sf-text-primary: #e6e8eb;
+  --sf-text-regular: #a8adb5;
+  --sf-text-muted: #6f757e;
+  --sf-text-success: #5fcf8b;
+  --sf-text-warning: #e0a63c;
+  --sf-text-danger: #f08a8a;
+
+  --sf-border: #2f343c;
+  --sf-border-strong: #3b414a;
+  --sf-border-danger: #5b3030;
+  --sf-shadow: rgba(0, 0, 0, 0.4);
+  --sf-shadow-strong: rgba(0, 0, 0, 0.55);
+
+  --sf-aside-bg: #111318;
+  --sf-aside-text: #9aa3b0;
+
+  --sf-graph-bg: #1a1d22;
+  --sf-graph-node: #262a31;
+  --sf-graph-node-stroke: #3b414a;
+  --sf-graph-edge: #4a515c;
+  --sf-graph-label: #e6e8eb;
+  --sf-graph-label-bg: #23262d;
+}
+
+/* 正文编辑区统一走变量，深色下比卡片略暗，减少长文阅读的对比疲劳 */
+.content-editor,
+.editor-surface {
+  background: var(--sf-editor-bg);
+  color: var(--sf-text-primary);
+}
+
+/* 滚动条跟随主题，避免深色下一条亮白滚动条 */
+html.dark * {
+  scrollbar-color: #3b414a transparent;
+}
+
+html.dark ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: #3b414a;
+  border-radius: 6px;
+}
+
+html.dark ::-webkit-scrollbar-track {
+  background: transparent;
+}

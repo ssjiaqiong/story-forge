@@ -1,0 +1,19 @@
+# =============================================================================
+# 换行统一规则（避免 Linux/macOS 上脚本因 CRLF 报 "bad interpreter"）
+#   源码与 shell 脚本一律 LF；Windows 批处理/PowerShell 用 CRLF。
+# =============================================================================
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.jar   binary
+*.zip   binary

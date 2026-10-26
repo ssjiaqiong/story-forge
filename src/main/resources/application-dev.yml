@@ -1,0 +1,9 @@
+# 本地开发环境：打印 SQL 与调试日志
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+logging:
+  level:
+    com.storyforge: debug
+    org.springframework.security: info

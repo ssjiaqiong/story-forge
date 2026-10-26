@@ -1,0 +1,80 @@
+# =============================================================================
+# StoryForge 单机部署编排
+#   拓扑：app（单镜像，前端 + 后端）+ postgres（唯一中间件）
+#   持久化：./data/files 前端可上传文件；./data/covers 小说封面；./data/pg 数据库；./data/logs 应用日志
+#   使用：cd docker && cp .env.example .env && 修改 .env && docker compose up -d --build
+# =============================================================================
+services:
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: storyforge:latest
+    container_name: storyforge-app
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      SERVER_PORT: "8080"
+      SPRING_PROFILES_ACTIVE: prod
+      TZ: Asia/Shanghai
+
+      # 数据库（PostgreSQL 为唯一中间件）
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-storyforge}
+      DB_USER: ${DB_USER:-storyforge}
+      DB_PASSWORD: ${DB_PASSWORD:-storyforge}
+
+      # 安全密钥：必须设置且长度 >= 32 字节
+      STORYFORGE_JWT_SECRET: ${STORYFORGE_JWT_SECRET:?请设置 STORYFORGE_JWT_SECRET（>= 32 字节）}
+      # 敏感字段加密主密钥（AI API Key）：不可随意更换，否则已存密文无法解密
+      STORYFORGE_SECRET_KEY: ${STORYFORGE_SECRET_KEY:?请设置 STORYFORGE_SECRET_KEY（随机值，且勿变更）}
+
+      # 初始超级管理员（仅首次启动、账号不存在时创建）
+      STORYFORGE_ADMIN_USERNAME: ${STORYFORGE_ADMIN_USERNAME:-admin}
+      STORYFORGE_ADMIN_PASSWORD: ${STORYFORGE_ADMIN_PASSWORD:-Admin@123456}
+      STORYFORGE_ADMIN_FORCE_CHANGE: ${STORYFORGE_ADMIN_FORCE_CHANGE:-true}
+
+      # 需求约束：关闭自助注册
+      STORYFORGE_REGISTRATION_ENABLED: "false"
+
+      # 本地文件存储（卷挂载）
+      STORYFORGE_FILE_ROOT: /data/files
+      # 小说封面目录（卷挂载，路径规则 user_id/novel_id/{uuid}.jpg）
+      STORYFORGE_COVER_ROOT: /data/covers
+      LOG_PATH: /app/logs
+      JAVA_OPTS: ${JAVA_OPTS:--Xms256m -Xmx1024m}
+    volumes:
+      - ./data/files:/data/files
+      - ./data/covers:/data/covers
+      - ./data/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - storyforge
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: storyforge-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-storyforge}
+      POSTGRES_USER: ${DB_USER:-storyforge}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-storyforge}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data/pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-storyforge} -d ${DB_NAME:-storyforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - storyforge
+
+networks:
+  storyforge:
+    driver: bridge

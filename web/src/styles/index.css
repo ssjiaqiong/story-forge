@@ -1,0 +1,61 @@
+/* 主题变量见 ./theme.css，这里只放基础布局与通用类 */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial,
+    sans-serif;
+  color: var(--sf-text-primary);
+  background: var(--sf-bg-page);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.page-container {
+  padding: 16px;
+}
+
+.page-card {
+  background: var(--sf-bg-card);
+  border-radius: 8px;
+  padding: 16px 20px;
+  box-shadow: 0 1px 4px var(--sf-shadow);
+  border: 1px solid var(--sf-border);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.toolbar-right {
+  margin-left: auto;
+}
+
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.text-muted {
+  color: var(--sf-text-regular);
+}
+
+/* 自定义卡片容器（工作台、灵感、书架大量使用）统一走变量 */
+.el-card {
+  border-color: var(--sf-border);
+  color: var(--sf-text-primary);
+}
