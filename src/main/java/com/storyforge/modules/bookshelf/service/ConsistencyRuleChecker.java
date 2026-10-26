@@ -281,22 +281,23 @@ public class ConsistencyRuleChecker {
                     "改掉多余的章号，让每章的章号唯一。"));
         }
 
-        // 5b 卷内断号
-        Map<Integer, List<Integer>> nosByVolume = new LinkedHashMap<>();
+        // 5b 全书断号
+        //
+        // 注意：这里查的是**全书**章号，不是「卷内从 1 开始」。系统的章号是全书递增的
+        // （新增章节取全书最大章号 + 1，AI 生成大纲也一路往上加），卷只是分组。
+        // 若按卷判断「卷内必须从 1 连续」，那么第一卷 1~5、第二卷 6~10 的正常分卷书
+        // 会被判成「第二卷缺第 1~5 章」——分卷一旦可管理，这个误报必然出现。
+        List<Integer> allNos = new ArrayList<>();
         for (ChapterEntity chapter : chapters) {
-            if (chapter.getChapterNo() == null) {
-                continue;
+            if (chapter.getChapterNo() != null) {
+                allNos.add(chapter.getChapterNo());
             }
-            int volume = chapter.getVolumeNo() == null ? 1 : chapter.getVolumeNo();
-            nosByVolume.computeIfAbsent(volume, key -> new ArrayList<>()).add(chapter.getChapterNo());
         }
-        for (Map.Entry<Integer, List<Integer>> entry : nosByVolume.entrySet()) {
-            List<Integer> sorted = new ArrayList<>(entry.getValue());
-            sorted.sort(Comparator.naturalOrder());
-            Set<Integer> unique = new HashSet<>(sorted);
-            if (unique.size() != sorted.size()) {
-                continue; // 重复已由 5a 报出，不再重复报断号
-            }
+        List<Integer> sorted = new ArrayList<>(allNos);
+        sorted.sort(Comparator.naturalOrder());
+        if (new HashSet<>(sorted).size() != sorted.size()) {
+            // 重复已由 5a 报出，此时再判断号只会给出误导性的缺口清单
+        } else if (!sorted.isEmpty()) {
             List<Integer> missing = new ArrayList<>();
             int expected = 1;
             for (Integer no : sorted) {
@@ -306,28 +307,27 @@ public class ConsistencyRuleChecker {
                 }
                 expected = no + 1;
             }
-            if (missing.isEmpty()) {
-                continue;
-            }
-            StringBuilder list = new StringBuilder();
-            int shown = 0;
-            for (Integer no : missing) {
-                if (shown >= 8) {
-                    list.append(" 等 ").append(missing.size()).append(" 个");
-                    break;
+            if (!missing.isEmpty()) {
+                StringBuilder list = new StringBuilder();
+                int shown = 0;
+                for (Integer no : missing) {
+                    if (shown >= 8) {
+                        list.append(" 等 ").append(missing.size()).append(" 个");
+                        break;
+                    }
+                    if (list.length() > 0) {
+                        list.append("、");
+                    }
+                    list.append(no);
+                    shown++;
                 }
-                if (list.length() > 0) {
-                    list.append("、");
-                }
-                list.append(no);
-                shown++;
+                found.add(new ConsistencyDraft("RULE", null, null, null, "STRUCTURE", "P1",
+                        "全书章号不连续，缺第 " + list + " 章",
+                        "现有章号从 1 开始应该连续，实际缺了第 " + list + " 章。"
+                                + "删章会造成断号；导出与「上一章 / 下一章」的衔接会因此错位。",
+                        "现有章号：" + sorted,
+                        "补上缺失的章节，或把后面的章号依次前移。"));
             }
-            found.add(new ConsistencyDraft("RULE", null, null, null, "STRUCTURE", "P1",
-                    "第 " + entry.getKey() + " 卷章号不连续，缺第 " + list + " 章",
-                    "第 " + entry.getKey() + " 卷现有章号从 1 开始应该连续，实际缺了第 " + list + " 章。"
-                            + "删章或改章号都可能造成断号；导出与「上一章 / 下一章」的衔接会因此错位。",
-                    "第 " + entry.getKey() + " 卷现有章号：" + sorted,
-                    "补上缺失的章节，或把后面的章号依次前移。"));
         }
 
         // 5c 排序值异常

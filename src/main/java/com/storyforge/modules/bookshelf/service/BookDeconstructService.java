@@ -147,6 +147,7 @@ public class BookDeconstructService {
     private final TimelineEventMapper timelineEventMapper;
     private final EventParticipantMapper eventParticipantMapper;
     private final ChapterMapper chapterMapper;
+    private final VolumeService volumeService;
     private final ChapterCharacterMapper chapterCharacterMapper;
     private final ChapterEventMapper chapterEventMapper;
     private final AiSceneEndpointResolver endpointResolver;
@@ -871,6 +872,16 @@ public class BookDeconstructService {
 
     private void saveChapters(Long novelId, Long userId, DeconstructResult result,
                               Map<String, Long> characterIds, Map<String, Long> eventIds) {
+        // 拆书会一次建出多卷：先把卷记录补齐，否则建出来的书在卷列表里是空的
+        Map<Integer, String> volumes = new LinkedHashMap<>();
+        for (DeconstructResult.Chapter chapter : result.getChapters()) {
+            int no = chapter.getVolumeNo() == null || chapter.getVolumeNo() < 1
+                    ? 1 : chapter.getVolumeNo();
+            volumes.putIfAbsent(no, chapter.getVolumeTitle());
+        }
+        for (Map.Entry<Integer, String> entry : volumes.entrySet()) {
+            volumeService.ensureVolume(novelId, entry.getKey(), entry.getValue());
+        }
         for (DeconstructResult.Chapter chapter : result.getChapters()) {
             ChapterEntity entity = new ChapterEntity();
             entity.setUserId(userId);

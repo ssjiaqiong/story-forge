@@ -104,6 +104,10 @@ public enum ErrorCode {
     WRITE_TASK_RUNNING(40064, "还有一个连写任务在跑，请等它结束或先停止再发起新的", 409),
     CONSISTENCY_TASK_RUNNING(40065, "这本书还有一个体检任务在跑，请等它结束再发起新的", 409),
     CONSISTENCY_ISSUE_NOT_FOUND(40066, "这个问题不存在或已被删除", 404),
+    VOLUME_NOT_FOUND(40067, "这一卷不存在或已被删除", 404),
+    VOLUME_HAS_CHAPTERS(40068, "这一卷下还有章节，请先选择要迁移到哪一卷", 400),
+    VOLUME_MOVE_INVALID(40069, "这一卷已经在最前 / 最后，移不动了", 400),
+    VOLUME_TARGET_INVALID(40070, "目标卷不存在或已被删除", 404),
 
     /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),

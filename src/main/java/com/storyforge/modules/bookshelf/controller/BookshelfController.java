@@ -13,6 +13,9 @@ import com.storyforge.modules.bookshelf.dto.ConsistencyCheckRequest;
 import com.storyforge.modules.bookshelf.dto.ConsistencyIssueStatusRequest;
 import com.storyforge.modules.bookshelf.dto.ConsistencyIssueVO;
 import com.storyforge.modules.bookshelf.dto.ConsistencyRunVO;
+import com.storyforge.modules.bookshelf.dto.VolumeCreateRequest;
+import com.storyforge.modules.bookshelf.dto.VolumeUpdateRequest;
+import com.storyforge.modules.bookshelf.dto.VolumeVO;
 import com.storyforge.modules.bookshelf.dto.ConsistencyTaskVO;
 import com.storyforge.modules.bookshelf.dto.NovelCreateRequest;
 import com.storyforge.modules.bookshelf.dto.NovelDetailVO;
@@ -28,6 +31,7 @@ import com.storyforge.modules.bookshelf.service.ChapterWriteTaskService;
 import com.storyforge.modules.bookshelf.service.ConsistencyService;
 import com.storyforge.modules.bookshelf.service.NovelTransferService;
 import com.storyforge.modules.bookshelf.service.NovelTxtExportService;
+import com.storyforge.modules.bookshelf.service.VolumeService;
 import com.storyforge.modules.novel.dto.NovelVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
@@ -69,6 +73,7 @@ public class BookshelfController {
     private final NovelTxtExportService novelTxtExportService;
     private final ChapterWriteTaskService chapterWriteTaskService;
     private final ConsistencyService consistencyService;
+    private final VolumeService volumeService;
     private final ObjectMapper objectMapper;
 
     @Operation(summary = "建书前的信息追问",
@@ -190,6 +195,51 @@ public class BookshelfController {
     @RateLimit(dimension = RateLimit.Dimension.USER, limit = 300, windowSeconds = 60)
     public R<List<ConsistencyRunVO>> listConsistencyRuns(@PathVariable Long novelId) {
         return R.ok(consistencyService.runs(novelId));
+    }
+
+    /* ---------------- 卷 ---------------- */
+
+    @Operation(summary = "卷列表",
+            description = "按卷序升序；章数、字数、首末章号实时聚合。没填过卷名的卷显示「第 N 卷」")
+    @GetMapping("/novels/{novelId}/volumes")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 600, windowSeconds = 60)
+    public R<List<VolumeVO>> listVolumes(@PathVariable Long novelId) {
+        return R.ok(volumeService.list(novelId));
+    }
+
+    @Operation(summary = "新增卷", description = "卷序自动取当前最大 + 1；卷名留空时用「第 N 卷」兜底")
+    @PostMapping("/novels/{novelId}/volumes")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
+    public R<VolumeVO> createVolume(@PathVariable Long novelId,
+                                    @Valid @RequestBody(required = false) VolumeCreateRequest request) {
+        return R.ok(volumeService.create(novelId, request));
+    }
+
+    @Operation(summary = "修改卷", description = "改卷名会把该卷下所有章节的卷名一起改掉；卷名留空表示退回「第 N 卷」")
+    @PutMapping("/volumes/{volumeId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
+    public R<VolumeVO> updateVolume(@PathVariable Long volumeId,
+                                    @Valid @RequestBody(required = false) VolumeUpdateRequest request) {
+        return R.ok(volumeService.update(volumeId, request));
+    }
+
+    @Operation(summary = "删除卷",
+            description = "卷下还有章节时必须带 moveTo 指定迁到哪一卷；给目标卷则先把章节迁过去再删，章号不变")
+    @DeleteMapping("/volumes/{volumeId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
+    public R<Void> deleteVolume(@PathVariable Long volumeId,
+                                @RequestParam(required = false) Integer moveTo) {
+        volumeService.delete(volumeId, moveTo);
+        return R.ok();
+    }
+
+    @Operation(summary = "移动卷",
+            description = "与相邻卷换卷序（UP / DOWN）；两侧章节的卷号、卷名与排序值一起重算，删除空出的卷号洞会重排")
+    @PutMapping("/volumes/{volumeId}/move")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
+    public R<List<VolumeVO>> moveVolume(@PathVariable Long volumeId,
+                                        @RequestParam String direction) {
+        return R.ok(volumeService.move(volumeId, direction));
     }
 
     @Operation(summary = "生成小说蓝图",

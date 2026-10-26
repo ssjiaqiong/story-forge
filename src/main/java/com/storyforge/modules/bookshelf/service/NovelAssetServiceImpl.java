@@ -31,6 +31,7 @@ import com.storyforge.modules.bookshelf.entity.FactionMemberEntity;
 import com.storyforge.modules.bookshelf.entity.ItemEntity;
 import com.storyforge.modules.bookshelf.entity.MasterOutlineEntity;
 import com.storyforge.modules.bookshelf.entity.TimelineEventEntity;
+import com.storyforge.modules.bookshelf.entity.VolumeEntity;
 import com.storyforge.modules.bookshelf.mapper.ChapterAnalysisMapper;
 import com.storyforge.modules.bookshelf.mapper.ChapterCharacterMapper;
 import com.storyforge.modules.bookshelf.mapper.ChapterEventMapper;
@@ -118,6 +119,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     private final CharacterInventoryMapper characterInventoryMapper;
     private final MasterOutlineMapper masterOutlineMapper;
     private final ChapterVersionService chapterVersionService;
+    private final VolumeService volumeService;
     private final ObjectMapper objectMapper;
 
     /* ------------------------------------------------------------------ */
@@ -160,12 +162,16 @@ public class NovelAssetServiceImpl implements NovelAssetService {
         }
         int volumeNo = request.getVolumeNo() == null ? 1 : request.getVolumeNo();
         int chapterNo = request.getChapterNo() == null ? nextChapterNo(novelId) : request.getChapterNo();
+        // 卷是实体了：这一卷必须存在，否则卷列表查不到它，改卷名也没地方改
+        VolumeEntity volume = volumeService.ensureVolume(novelId, volumeNo, request.getVolumeTitle());
 
         ChapterEntity entity = new ChapterEntity();
         entity.setUserId(UserContextHolder.requireUserId());
         entity.setNovelId(novelId);
-        entity.setVolumeNo(volumeNo);
-        entity.setVolumeTitle(trimToNull(request.getVolumeTitle()));
+        entity.setVolumeNo(volume.getVolumeNo());
+        // 冗余卷名以卷实体为准：请求没带卷名时，这里要落卷表里已有的名字，
+        // 否则建进一个已命名的卷却留着 null，列表与导出的卷名会缺失
+        entity.setVolumeTitle(volume.getTitle());
         entity.setChapterNo(chapterNo);
         entity.setTitle(request.getTitle().trim());
         entity.setSummary(request.getSummary());
@@ -208,6 +214,18 @@ public class NovelAssetServiceImpl implements NovelAssetService {
                 "回滚到第 " + version.getVersionNo() + " 版前的稿子");
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ChapterVO moveChapterToVolume(Long chapterId, Integer volumeNo) {
+        ChapterEntity entity = requireChapter(chapterId);
+        // 目标卷不存在就建一卷：允许「先挪过去、再取名」，不让作者卡在参数校验上
+        VolumeEntity volume = volumeService.ensureVolume(entity.getNovelId(), volumeNo, null);
+        ChapterRequest request = new ChapterRequest();
+        request.setVolumeNo(volume.getVolumeNo());
+        // 走章节更新的唯一收口：排序值在那里按卷号与章号重算
+        return updateChapter(chapterId, request, ChapterVersionEntity.SOURCE_MANUAL);
+    }
+
     /**
      * 更新章节的唯一实现。
      *
@@ -236,9 +254,14 @@ public class NovelAssetServiceImpl implements NovelAssetService {
             entity.setTitle(request.getTitle().trim());
         }
         if (request.getVolumeNo() != null) {
+            // 改归属卷：目标卷必须存在（不存在就建一卷），并把冗余卷名一并对齐
+            VolumeEntity volume = volumeService.ensureVolume(entity.getNovelId(), request.getVolumeNo(),
+                    request.getVolumeTitle());
             entity.setVolumeNo(request.getVolumeNo());
-        }
-        if (request.getVolumeTitle() != null) {
+            entity.setVolumeTitle(volume.getTitle());
+        } else if (request.getVolumeTitle() != null) {
+            // 只改这一章的卷名：不通过卷表。这种情况是「同一卷里个别章节卷名写歪了」，
+            // 让它改，但改名不会扩散到同卷其它章节——卷名的唯一写入方仍是 VolumeService。
             entity.setVolumeTitle(request.getVolumeTitle().trim());
         }
         if (request.getChapterNo() != null) {

@@ -150,6 +150,54 @@ export function deleteChapter(id: string) {
   return api.delete<void>(`/bookshelf/chapters/${id}`)
 }
 
+/** 把章节移动到另一卷（章号不变） */
+export function moveChapterToVolume(id: string, volumeNo: number) {
+  return api.put<ChapterVO>(`/bookshelf/chapters/${id}/volume`, { volumeNo })
+}
+
+/* ---------------- 卷 ---------------- */
+
+export interface VolumeVO {
+  id: string
+  volumeNo: number
+  title: string
+  /** 卷名是否为系统兜底（还没填过） */
+  titleFallback: boolean
+  intro?: string
+  chapterCount: number
+  wordCount: number
+  /** 空卷为 null */
+  firstChapterNo: number | null
+  lastChapterNo: number | null
+}
+
+export interface VolumePayload {
+  title?: string
+  intro?: string
+}
+
+export function listVolumes(novelId: string) {
+  return api.get<VolumeVO[]>(`/bookshelf/novels/${novelId}/volumes`)
+}
+
+export function createVolume(novelId: string, payload: VolumePayload = {}) {
+  return api.post<VolumeVO>(`/bookshelf/novels/${novelId}/volumes`, payload)
+}
+
+export function updateVolume(id: string, payload: VolumePayload) {
+  return api.put<VolumeVO>(`/bookshelf/volumes/${id}`, payload)
+}
+
+/** 删除卷；卷下还有章节时必须给 moveTo 指定迁到哪一卷 */
+export function deleteVolume(id: string, moveTo?: number) {
+  const query = moveTo == null ? '' : `?moveTo=${moveTo}`
+  return api.delete<void>(`/bookshelf/volumes/${id}${query}`)
+}
+
+export function moveVolume(id: string, direction: 'UP' | 'DOWN') {
+  return api.put<VolumeVO[]>(`/bookshelf/volumes/${id}/move?direction=${direction}`)
+}
+
 /* ---------------- 时间线 ---------------- */
 
 export function listTimeline(novelId: string) {

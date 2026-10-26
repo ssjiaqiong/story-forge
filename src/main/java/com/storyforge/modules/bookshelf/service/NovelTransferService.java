@@ -102,6 +102,7 @@ public class NovelTransferService {
     private final TimelineEventMapper timelineEventMapper;
     private final EventParticipantMapper eventParticipantMapper;
     private final ChapterMapper chapterMapper;
+    private final VolumeService volumeService;
     private final ChapterCharacterMapper chapterCharacterMapper;
     private final ChapterEventMapper chapterEventMapper;
     private final ChapterAnalysisMapper chapterAnalysisMapper;
@@ -501,6 +502,16 @@ public class NovelTransferService {
             chapterMapper.insert(e);
             chapterIds.put(oldId, e.getId());
             totalWords += e.getWordCount() == null ? 0L : e.getWordCount();
+        }
+        // 卷是实体了：导入进来的章节带着原来的卷号与卷名，必须照着把卷记录补齐，
+        // 否则导入完的书在卷列表里一卷都看不到（改卷名、移动章节都没地方下手）
+        Map<Integer, String> volumes = new LinkedHashMap<>();
+        for (ChapterEntity e : safe(pkg.getChapters())) {
+            int no = e.getVolumeNo() == null || e.getVolumeNo() < 1 ? 1 : e.getVolumeNo();
+            volumes.putIfAbsent(no, e.getVolumeTitle());
+        }
+        for (Map.Entry<Integer, String> entry : volumes.entrySet()) {
+            volumeService.ensureVolume(novelId, entry.getKey(), entry.getValue());
         }
 
         /* ---------- 12) 章节 ↔ 人物 / 事件 ---------- */

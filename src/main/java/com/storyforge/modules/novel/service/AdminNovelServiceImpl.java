@@ -80,7 +80,11 @@ public class AdminNovelServiceImpl implements AdminNovelService {
             "t_novel_cover",
             // 创作助手会话
             "t_novel_agent_message",
-            "t_novel_agent_session");
+            "t_novel_agent_session",
+            // 正文历史、一致性台账、卷（后加的表，别漏在级联之外）
+            "t_chapter_version",
+            "t_consistency_issue",
+            "t_volume");
 
     private final AdminNovelMapper adminNovelMapper;
     private final CoverStorage coverStorage;

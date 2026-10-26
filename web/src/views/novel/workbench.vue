@@ -158,6 +158,7 @@
             <el-button :icon="MagicStick" :disabled="aiOutlineGenerating" @click="openAiOutlineDialog">
               AI 生成大纲
             </el-button>
+            <el-button :icon="Plus" @click="openVolumeDialog()">新增卷</el-button>
             <el-button type="primary" :icon="Plus" @click="openChapterDialog()">新增章节</el-button>
           </div>
         </header>
@@ -174,9 +175,24 @@
         </div>
         <div v-for="group in volumeGroups" :key="group.volumeNo" class="volume-block">
           <div class="volume-head">
-            <span class="volume-name">{{ group.volumeTitle || `第 ${group.volumeNo} 卷` }}</span>
+            <span class="volume-name">{{ group.title || `第 ${group.volumeNo} 卷` }}</span>
             <span class="volume-count">{{ group.items.length }} 章</span>
+            <el-dropdown trigger="click" @command="onVolumeCommand(group.volumeNo, $event)">
+              <el-button text size="small" :icon="MoreFilled" class="volume-more" />
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item :command="'rename'">改名 / 卷简介</el-dropdown-item>
+                  <el-dropdown-item :command="'up'" :disabled="group.volumeNo <= 1">上移</el-dropdown-item>
+                  <el-dropdown-item
+                    :command="'down'"
+                    :disabled="group.volumeNo >= volumeGroups.length"
+                  >下移</el-dropdown-item>
+                  <el-dropdown-item :command="'delete'" divided>删除这一卷</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
+          <div v-if="group.intro" class="volume-intro">{{ group.intro }}</div>
           <div v-for="chapter in group.items" :key="chapter.id" class="chapter-row">
             <span class="chapter-no">第 {{ chapter.chapterNo }} 章</span>
             <div class="chapter-main">
@@ -209,6 +225,23 @@
             <el-tag size="small" :type="chapterStatusType(chapter.status)" effect="plain">{{ chapterStatusLabel(chapter.status) }}</el-tag>
             <div class="row-actions">
               <el-button text size="small" @click="openChapterDialog(chapter)">编辑</el-button>
+              <el-dropdown
+                v-if="volumes.length > 1"
+                trigger="click"
+                @command="moveChapterTo(chapter, Number($event))"
+              >
+                <el-button text size="small">移动到</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item
+                      v-for="volume in volumes"
+                      :key="volume.id"
+                      :command="volume.volumeNo"
+                      :disabled="volume.volumeNo === chapter.volumeNo"
+                    >第 {{ volume.volumeNo }} 卷 {{ volume.title }}</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
               <el-button text size="small" type="danger" @click="removeChapter(chapter)">删除</el-button>
             </div>
           </div>
@@ -2316,6 +2349,21 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="volumeDialog.visible" :title="volumeDialog.id ? '编辑卷' : '新增卷'" width="520px" destroy-on-close>
+      <el-form label-width="72px">
+        <el-form-item label="卷名">
+          <el-input v-model="volumeDialog.title" maxlength="60" show-word-limit placeholder="如：第一卷 风起青萍" />
+        </el-form-item>
+        <el-form-item label="卷简介">
+          <el-input v-model="volumeDialog.intro" type="textarea" :rows="4" maxlength="500" show-word-limit placeholder="选填，概括这一卷的主线" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="volumeDialog.visible = false">取消</el-button>
+        <el-button type="primary" @click="submitVolume">保存</el-button>
+      </template>
+    </el-dialog>
+
     <ChangeHistoryDrawer ref="historyDrawer" :novel-id="novelId" />
     <ChapterVersionDrawer ref="versionDrawer" :chapter-id="activeChapterId" @restored="handleVersionRestored" />
     <ChapterReviseDialog
@@ -2339,7 +2387,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Aim, ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, Edit, EditPen, Files, FirstAidKit, Loading, Lock, MagicStick, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
+import { Aim, ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, Edit, EditPen, Files, FirstAidKit, Loading, Lock, MagicStick, MoreFilled, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
 import {
   exportNovelTxt,
   getNovelDetail,
@@ -2387,6 +2435,13 @@ import {
   deleteMasterOutline,
   deleteRelation,
   deleteTimeline,
+  deleteVolume,
+  createVolume,
+  listVolumes,
+  moveChapterToVolume,
+  moveVolume,
+  updateVolume,
+  type VolumeVO,
   generateCharacters,
   generateContentStream,
   generateEvents,
@@ -2570,6 +2625,16 @@ const masterOutlineAiDialog = reactive({
 const chapters = ref<ChapterVO[]>([])
 const chapterLoading = ref(false)
 const chapterSaving = ref(false)
+
+/* ---------- 卷 ---------- */
+const volumes = ref<VolumeVO[]>([])
+const volumeDialog = reactive({
+  visible: false,
+  id: '',
+  title: '',
+  intro: ''
+})
+
 const chapterDialog = reactive({
   visible: false,
   id: '',
@@ -4074,16 +4139,43 @@ const coverStyle = computed(() => {
 
 const statusLabel = computed(() => STATUS_OPTIONS.find((item) => item.value === basic.status)?.label ?? basic.status)
 
+/**
+ * 章节按卷分组。
+ *
+ * 以卷列表为准（卷是实体，空卷也要显示出来，改名后卷名也是权威来源），
+ * 卷列表还没加载完时退回按章节的 volumeNo 分组，避免首屏闪一下空列表。
+ */
 const volumeGroups = computed(() => {
-  const map = new Map<number, { volumeNo: number; volumeTitle: string; items: ChapterVO[] }>()
+  const byVolume = new Map<number, ChapterVO[]>()
   for (const chapter of chapters.value) {
     const volumeNo = chapter.volumeNo || 1
-    if (!map.has(volumeNo)) {
-      map.set(volumeNo, { volumeNo, volumeTitle: chapter.volumeTitle || '', items: [] })
+    if (!byVolume.has(volumeNo)) {
+      byVolume.set(volumeNo, [])
     }
-    map.get(volumeNo)!.items.push(chapter)
+    byVolume.get(volumeNo)!.push(chapter)
   }
-  return Array.from(map.values()).sort((a, b) => a.volumeNo - b.volumeNo)
+  if (!volumes.value.length) {
+    return Array.from(byVolume.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([volumeNo, items]) => ({
+        volumeNo,
+        title: `第 ${volumeNo} 卷`,
+        intro: '',
+        chapterCount: items.length,
+        wordCount: 0,
+        titleFallback: true,
+        items
+      }))
+  }
+  return volumes.value.map((volume) => ({
+    volumeNo: volume.volumeNo,
+    title: volume.title,
+    intro: volume.intro,
+    chapterCount: volume.chapterCount,
+    wordCount: volume.wordCount,
+    titleFallback: volume.titleFallback,
+    items: byVolume.get(volume.volumeNo) || []
+  }))
 })
 
 onMounted(loadAll)
@@ -4107,7 +4199,7 @@ async function loadAll() {
       settings[doc.category] = doc.content || ''
     }
     characters.value = detail.characters || []
-    await Promise.all([loadChapters(), loadMasterOutlines(), loadTimeline(), loadItems(), loadRelations(), loadFactions(), loadBagAll()])
+    await Promise.all([loadChapters(), loadVolumes(), loadMasterOutlines(), loadTimeline(), loadItems(), loadRelations(), loadFactions(), loadBagAll()])
     // 直接带 ?tab=xxx 进入时不会触发菜单切换，这里补一次初始化
     if (activeMenu.value === 'analysis') {
       await loadAnalysisPanel()
@@ -4292,10 +4384,123 @@ async function loadChapters() {
   }
 }
 
+async function loadVolumes() {
+  try {
+    volumes.value = await listVolumes(novelId.value)
+  } catch (error) {
+    ElMessage.error((error as Error).message || '加载卷列表失败')
+  }
+}
+
+/* ---------- 卷 ---------- */
+function openVolumeDialog(volumeNo?: number) {
+  const found = volumeNo == null ? undefined : volumes.value.find((item) => item.volumeNo === volumeNo)
+  volumeDialog.id = found?.id || ''
+  volumeDialog.title = found && !found.titleFallback ? found.title : ''
+  volumeDialog.intro = found?.intro || ''
+  volumeDialog.visible = true
+}
+
+async function submitVolume() {
+  try {
+    if (volumeDialog.id) {
+      await updateVolume(volumeDialog.id, {
+        title: volumeDialog.title.trim(),
+        intro: volumeDialog.intro
+      })
+      ElMessage.success('已保存，该卷下章节的卷名已同步')
+    } else {
+      await createVolume(novelId.value, { title: volumeDialog.title.trim() })
+      ElMessage.success('已新增一卷')
+    }
+    volumeDialog.visible = false
+    await loadVolumes()
+    await loadChapters()
+  } catch (error) {
+    ElMessage.error((error as Error).message || '保存失败')
+  }
+}
+
+function onVolumeCommand(volumeNo: number, command: string) {
+  if (command === 'rename') {
+    openVolumeDialog(volumeNo)
+  } else if (command === 'up') {
+    void moveVolumeOrder(volumeNo, 'UP')
+  } else if (command === 'down') {
+    void moveVolumeOrder(volumeNo, 'DOWN')
+  } else if (command === 'delete') {
+    void removeVolume(volumeNo)
+  }
+}
+
+async function moveVolumeOrder(volumeNo: number, direction: 'UP' | 'DOWN') {
+  const found = volumes.value.find((item) => item.volumeNo === volumeNo)
+  if (!found) return
+  try {
+    volumes.value = await moveVolume(found.id, direction)
+    await loadChapters()
+  } catch (error) {
+    ElMessage.error((error as Error).message || '移动失败')
+  }
+}
+
+async function removeVolume(volumeNo: number) {
+  const found = volumes.value.find((item) => item.volumeNo === volumeNo)
+  if (!found) return
+  // 空卷直接删；有章节的卷必须先挑一个目标卷，否则后端会拒绝
+  let moveTo: number | undefined
+  if (found.chapterCount > 0) {
+    const others = volumes.value.filter((item) => item.volumeNo !== volumeNo)
+    if (!others.length) {
+      ElMessage.warning('只剩这一卷了，先把章节删掉或直接改这一卷的名字')
+      return
+    }
+    try {
+      const { value } = await ElMessageBox.prompt(
+        `这一卷下还有 ${found.chapterCount} 章，请选择要迁移到哪一卷（填卷序号）：` +
+          others.map((item) => `${item.volumeNo}＝${item.title}`).join('，'),
+        '删除卷',
+        {
+          inputValue: String(others[0].volumeNo),
+          inputPattern: new RegExp(`^(${others.map((item) => item.volumeNo).join('|')})$`),
+          inputErrorMessage: '请填写上面列出的卷序号',
+          confirmButtonText: '迁移并删除',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }
+      )
+      moveTo = Number(value)
+    } catch {
+      return
+    }
+  }
+  try {
+    await deleteVolume(found.id, moveTo)
+    ElMessage.success('已删除')
+    await loadVolumes()
+    await loadChapters()
+    await refreshNovel()
+  } catch (error) {
+    ElMessage.error((error as Error).message || '删除失败')
+  }
+}
+
+async function moveChapterTo(chapter: ChapterVO, volumeNo: number) {
+  if (chapter.volumeNo === volumeNo) return
+  try {
+    await moveChapterToVolume(chapter.id, volumeNo)
+    ElMessage.success(`已移动到第 ${volumeNo} 卷`)
+    await loadVolumes()
+    await loadChapters()
+  } catch (error) {
+    ElMessage.error((error as Error).message || '移动失败')
+  }
+}
+
 function openChapterDialog(chapter?: ChapterVO) {
   chapterDialog.id = chapter?.id || ''
   chapterDialog.volumeNo = chapter?.volumeNo || volumeGroups.value[volumeGroups.value.length - 1]?.volumeNo || 1
-  chapterDialog.volumeTitle = chapter?.volumeTitle || volumeGroups.value[volumeGroups.value.length - 1]?.volumeTitle || ''
+  chapterDialog.volumeTitle = chapter?.volumeTitle || volumeGroups.value[volumeGroups.value.length - 1]?.title || ''
   chapterDialog.chapterNo = chapter?.chapterNo || (chapters.value.length ? Math.max(...chapters.value.map((item) => item.chapterNo)) + 1 : 1)
   chapterDialog.title = chapter?.title || ''
   chapterDialog.summary = chapter?.summary || ''
@@ -4333,6 +4538,7 @@ async function submitChapter() {
     chapterDialog.visible = false
     ElMessage.success('章节已保存')
     await loadChapters()
+    await loadVolumes()
     await refreshNovel()
   } catch (error) {
     ElMessage.error((error as Error).message || '保存失败')
@@ -4360,6 +4566,7 @@ async function removeChapter(chapter: ChapterVO) {
     }
     ElMessage.success('已删除')
     await loadChapters()
+    await loadVolumes()
     await refreshNovel()
   } catch (error) {
     ElMessage.error((error as Error).message || '删除失败')
@@ -5380,6 +5587,18 @@ function roleType(value?: string) {
 .volume-count {
   font-size: 11px;
   color: var(--sf-text-muted);
+}
+
+.volume-more {
+  margin-left: auto;
+}
+
+.volume-intro {
+  font-size: 12px;
+  color: var(--sf-text-muted);
+  line-height: 1.6;
+  margin: -2px 0 8px;
+  padding-left: 2px;
 }
 
 .chapter-row {

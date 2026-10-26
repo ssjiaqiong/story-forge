@@ -38,6 +38,14 @@ public interface NovelAssetService {
     ChapterVO updateChapter(Long chapterId, ChapterRequest request, String source);
 
     /**
+     * 把章节移动到另一卷。
+     *
+     * <p>只改归属，不动章号；目标卷不存在时自动建一卷。改卷名的唯一入口是
+     * {@code VolumeService}，这里只是把章节的冗余字段对齐过去。</p>
+     */
+    ChapterVO moveChapterToVolume(Long chapterId, Integer volumeNo);
+
+    /**
      * 回滚到某个历史版本。
      *
      * <p>回滚前的当前稿会先存为新版本，所以可以再回滚回来；已标记「已完成」的章节也允许回滚

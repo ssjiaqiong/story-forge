@@ -4,6 +4,7 @@ import com.storyforge.common.api.PageResult;
 import com.storyforge.common.api.R;
 import com.storyforge.common.ratelimit.RateLimit;
 import com.storyforge.modules.bookshelf.dto.ChapterRequest;
+import com.storyforge.modules.bookshelf.dto.ChapterVolumeRequest;
 import com.storyforge.modules.bookshelf.dto.ChapterVersionDetailVO;
 import com.storyforge.modules.bookshelf.dto.ChapterVersionVO;
 import com.storyforge.modules.bookshelf.dto.ChapterVO;
@@ -149,6 +150,15 @@ public class NovelAssetController {
     }
 
     /* ---------------- 章节正文历史版本 ---------------- */
+
+    @Operation(summary = "移动章节到其他卷",
+            description = "只改归属，章号不变；目标卷不存在时自动建一卷。改卷名请走卷管理（会同步整卷章节）")
+    @PutMapping("/chapters/{id}/volume")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
+    public R<ChapterVO> moveChapterToVolume(@PathVariable Long id,
+                                            @Valid @RequestBody ChapterVolumeRequest request) {
+        return R.ok(assetService.moveChapterToVolume(id, request.getVolumeNo()));
+    }
 
     @Operation(summary = "历史版本列表",
             description = "按版本号倒序返回，**不含正文**；正文变化时才会产生版本（保存前的旧内容）")
