@@ -529,7 +529,9 @@ public class ConsistencyService {
     @Transactional
     public ConsistencyIssueVO updateStatus(Long issueId, ConsistencyIssueStatusRequest request, Long userId) {
         ConsistencyIssueEntity row = issueMapper.selectById(issueId);
-        if (row == null) {
+        // 归属二次校验：数据隔离插件已追加 user_id 条件，这里再兜一次——
+        // 按 ID 直达的接口必须有显式校验，越权统一表现为「资源不存在」。
+        if (row == null || !userId.equals(row.getUserId())) {
             throw BizException.of(ErrorCode.CONSISTENCY_ISSUE_NOT_FOUND);
         }
         String status = normalizeStatus(request == null ? null : request.getStatus());

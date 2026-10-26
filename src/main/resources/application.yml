@@ -148,6 +148,8 @@ storyforge:
       - t_novel_agent_session
       - t_novel_agent_message
       - t_master_outline
+      - t_chapter_version
+      - t_consistency_issue
 
   # 敏感字段加密主密钥（AI API Key 等）。生产必须通过环境变量注入且不得随意更换，
   # 更换后已落库的密文将无法解密。
