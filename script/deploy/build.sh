@@ -20,7 +20,7 @@
 #   配置：同目录 server.env
 #     REGISTRY / IMAGE_NAME / IMAGE_TAG / HOST / USER / KEY / REMOTE_DIR / REGISTRY_USER
 #
-#   推送后即可用镜像部署：./script/deploy/deploy.sh --from-registry
+#   推送后即可用镜像部署：./script/deploy/deploy.sh（默认拉镜像，不编译）
 # =============================================================================
 set -euo pipefail
 
@@ -306,7 +306,7 @@ ok "镜像地址：${IMAGE}"
 if [ -n "$DIGEST" ]; then
     info "digest：${DIGEST}"
 fi
-info "用镜像部署：./script/deploy/deploy.sh --from-registry"
+info "用镜像部署：./script/deploy/deploy.sh（默认）或 --image <地址>"
 info "或在服务器手动：APP_IMAGE=${IMAGE} docker compose pull app && docker compose up -d --no-build"
 
 rm -rf "$STAGING" 2>/dev/null || true

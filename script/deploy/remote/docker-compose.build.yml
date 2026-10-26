@@ -1,0 +1,17 @@
+# =============================================================================
+# 源码构建覆盖文件（仅 deploy.sh --from-source 使用）
+#
+#   默认部署不编译，直接用 TCR 里的镜像。只有离线 / 无法拉镜像时才用本文件
+#   叠加到 docker-compose.yml 上，让 compose 用上传的 app.jar 现场构建：
+#
+#       docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+#   构建上下文只需三件东西（由 deploy.sh 上传）：
+#       app.jar  Dockerfile  start.sh
+# =============================================================================
+services:
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile

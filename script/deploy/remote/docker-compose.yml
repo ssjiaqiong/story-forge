@@ -1,22 +1,20 @@
 # =============================================================================
 # StoryForge 远程单机编排（app + postgres）
-#   与 docker/docker-compose.yml 的差异：镜像由本地 jar 构建（不在服务器跑 Maven/Node），
-#   并按 2C2G 轻量服务器调低 JVM 堆与 PG shared_buffers。
-#   数据落 ./data/（pg / files / covers / logs），整目录可备份。
 #
-#   两种部署来源：
-#     源码上传构建：docker compose up -d --build              （deploy.sh 默认）
-#     镜像仓库拉取：APP_IMAGE=<tcr镜像> docker compose pull app
-#                   APP_IMAGE=<tcr镜像> docker compose up -d --no-build
-#                   （deploy.sh --from-registry）
+#   应用镜像来自腾讯云 TCR：服务器上不编译、不需要 Maven / Node / 源码，
+#   只需要本文件 + .env：
+#       docker compose pull app
+#       docker compose up -d --no-build
+#
+#   换版本：改下面的 image 标签，或部署时用环境变量覆盖
+#       APP_IMAGE=ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.1 docker compose up -d
+#
+#   数据落 ./data/（pg / files / covers / logs），整目录可备份。
 # =============================================================================
 services:
 
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ${APP_IMAGE:-storyforge:latest}
+    image: ${APP_IMAGE:-ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.0}
     container_name: storyforge-app
     ports:
       - "${APP_PORT:-8080}:8080"

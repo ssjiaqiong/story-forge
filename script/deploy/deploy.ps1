@@ -3,21 +3,26 @@
 # StoryForge 远程部署脚本（Windows PowerShell）
 #
 #   用法：
-#     .\script\deploy\deploy.ps1                # 构建 -> 上传 -> 远端 compose 启动 -> 健康检查
-#     .\script\deploy\deploy.ps1 -SkipBuild     # 复用已有 target/app.jar
+#     .\script\deploy\deploy.ps1                 # 拉取 TCR 镜像 -> 启动 -> 健康检查（默认，不编译）
+#     .\script\deploy\deploy.ps1 -Image <地址>    # 临时换镜像地址/标签，如 .../story-forge:v1.0.1
+#     .\script\deploy\deploy.ps1 -FromSource     # 从源码构建部署（需 JDK/Maven/Node，离线兜底）
 #     .\script\deploy\deploy.ps1 status
 #     .\script\deploy\deploy.ps1 logs [-Lines 200]
 #     .\script\deploy\deploy.ps1 restart
 #     .\script\deploy\deploy.ps1 stop
+#     .\script\deploy\deploy.ps1 psql
 #
 #   配置：同目录 server.env；首次部署自动生成 .env，之后保留远端 .env。
+#   默认镜像：ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.0
 # =============================================================================
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
     [ValidateSet('deploy', 'status', 'logs', 'restart', 'stop', 'psql', 'help')]
     [string]$Action = 'deploy',
+    [switch]$FromSource,
     [switch]$SkipBuild,
+    [string]$Image,
     [int]$Lines = 200
 )
 
@@ -51,7 +56,7 @@ function Invoke-Rcp([string[]]$LocalPaths, [string]$RemotePath) {
 }
 
 if ($Action -eq 'help') {
-    Get-Content $MyInvocation.MyCommand.Path | Select-Object -Skip 1 -First 17 | ForEach-Object { $_ -replace '^# ?', '' }
+    Get-Content $MyInvocation.MyCommand.Path | Select-Object -Skip 1 -First 18 | ForEach-Object { $_ -replace '^# ?', '' }
     exit 0
 }
 
@@ -74,6 +79,15 @@ $Key     = $cfg['KEY']
 $RemoteDir = if ($cfg['REMOTE_DIR']) { $cfg['REMOTE_DIR'] } else { '/opt/storyforge' }
 $AppPort = if ($cfg['APP_PORT']) { $cfg['APP_PORT'] } else { '8080' }
 $JavaOpts = if ($cfg['JAVA_OPTS']) { $cfg['JAVA_OPTS'] } else { '-Xms128m -Xmx640m' }
+
+# ---------- 镜像地址（默认部署模式） ----------
+# 与 remote\docker-compose.yml 的 image 默认值保持一致
+$DefaultImage = 'ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.0'
+$Reg     = if ($cfg['REGISTRY']) { $cfg['REGISTRY'] } else { 'ccr.ccs.tencentyun.com' }
+$ImgName = if ($cfg['IMAGE_NAME']) { $cfg['IMAGE_NAME'] } else { 'jiaqiong/story-forge' }
+$ImgTag  = if ($cfg['IMAGE_TAG']) { $cfg['IMAGE_TAG'] } else { 'v1.0.0' }
+$AppImage = if ($Image) { $Image } elseif ($env:APP_IMAGE) { $env:APP_IMAGE } else { "${Reg}/${ImgName}:${ImgTag}" }
+if (-not $AppImage) { $AppImage = $DefaultImage }
 
 if ($Key) {
     if (-not [System.IO.Path]::IsPathRooted($Key)) { $Key = Join-Path $ScriptDir $Key }
@@ -111,29 +125,42 @@ switch ($Action) {
         Invoke-Rsh "cd $RemoteDir && docker compose exec postgres psql -U storyforge -d storyforge"
     }
     'deploy' {
-        # ---------- 1. 构建 ----------
+        $FromRegistry = -not $FromSource
         $JarPath = Join-Path $AppHome 'target\app.jar'
-        if ($SkipBuild) {
+
+        # ---------- 1. 构建（仅 -FromSource 才编译） ----------
+        if ($FromRegistry) {
+            Step "镜像模式：本地不构建、不上传 jar，直接使用 TCR 镜像"
+            Ok "镜像：$AppImage"
+            if ($SkipBuild) { Warn "-SkipBuild 在镜像模式下无意义，已忽略" }
+        }
+        elseif ($SkipBuild) {
             if (-not (Test-Path $JarPath)) { Fail "-SkipBuild 需要已有 target/app.jar" }
             Warn "跳过构建，使用现有 target/app.jar"
-        } else {
-            Step "构建（复用 script/build.ps1）"
+        }
+        else {
+            Step "源码构建（复用 script/build.ps1）"
             & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir '..\build.ps1') -SkipTypecheck
             if ($LASTEXITCODE -ne 0) { Fail "构建失败" }
             if (-not (Test-Path $JarPath)) { Fail "构建后未找到 target/app.jar" }
         }
-        $jarInfo = Get-Item $JarPath
-        Ok ("app.jar = {0:N1} MB" -f ($jarInfo.Length / 1MB))
+        if (-not $FromRegistry) {
+            $jarInfo = Get-Item $JarPath
+            Ok ("app.jar = {0:N1} MB" -f ($jarInfo.Length / 1MB))
+        }
 
         # ---------- 2. 准备上传包 ----------
         Step "准备部署包"
         $Staging = Join-Path $AppHome 'target\deploy-staging'
         if (Test-Path $Staging) { Remove-Item -Recurse -Force $Staging -ErrorAction SilentlyContinue }
         New-Item -ItemType Directory -Path $Staging | Out-Null
-        Copy-Item $JarPath (Join-Path $Staging 'app.jar')
-        Copy-Item (Join-Path $ScriptDir 'remote\Dockerfile') $Staging
         Copy-Item (Join-Path $ScriptDir 'remote\docker-compose.yml') $Staging
-        Copy-Item (Join-Path $AppHome 'docker\start.sh') $Staging
+        if (-not $FromRegistry) {
+            Copy-Item $JarPath (Join-Path $Staging 'app.jar')
+            Copy-Item (Join-Path $ScriptDir 'remote\Dockerfile') $Staging
+            Copy-Item (Join-Path $ScriptDir 'remote\docker-compose.build.yml') $Staging
+            Copy-Item (Join-Path $AppHome 'docker\start.sh') $Staging
+        }
 
         # ---------- 3. 远端目录与 .env ----------
         Step "同步到 $Remote`:$RemoteDir"
@@ -173,8 +200,15 @@ JAVA_OPTS=$JavaOpts
         }
 
         # ---------- 4. 上传 ----------
-        Invoke-Rcp @((Join-Path $Staging 'app.jar'), (Join-Path $Staging 'Dockerfile'),
-                     (Join-Path $Staging 'docker-compose.yml'), (Join-Path $Staging 'start.sh')) "${Remote}:$RemoteDir/"
+        if ($FromRegistry) {
+            # 镜像模式只需 compose 文件，服务器不接触任何源码/构建产物
+            Invoke-Rcp @((Join-Path $Staging 'docker-compose.yml')) "${Remote}:$RemoteDir/"
+        }
+        else {
+            Invoke-Rcp @((Join-Path $Staging 'app.jar'), (Join-Path $Staging 'Dockerfile'),
+                         (Join-Path $Staging 'docker-compose.yml'), (Join-Path $Staging 'docker-compose.build.yml'),
+                         (Join-Path $Staging 'start.sh')) "${Remote}:$RemoteDir/"
+        }
 
         # ---------- 5. 镜像加速 ----------
         $mirrored = & ssh @($script:SshArgs) "grep -q mirror.ccs.tencentyun.com /etc/docker/daemon.json 2>/dev/null && echo yes || echo no"
@@ -183,10 +217,22 @@ JAVA_OPTS=$JavaOpts
             Invoke-Rsh "mkdir -p /etc/docker && printf '{`"registry-mirrors`":[`"https://mirror.ccs.tencentyun.com`",`"https://docker.m.daocloud.io`"]}' > /etc/docker/daemon.json && (systemctl restart docker || service docker restart) && sleep 2" | Out-Null
         }
 
-        # ---------- 6. 构建并启动 ----------
-        Step "远端构建镜像并启动（compose up -d --build）"
-        Invoke-Rsh "cd $RemoteDir && docker compose up -d --build"
-        if ($LASTEXITCODE -ne 0) { Fail "compose 启动失败，请执行 deploy.ps1 logs 查看" }
+        # ---------- 6. 拉镜像并启动 ----------
+        if ($FromRegistry) {
+            Step "拉取镜像并启动（docker compose pull -> up -d --no-build）"
+            Invoke-Rsh "cd $RemoteDir && APP_IMAGE='$AppImage' docker compose pull app" | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Warn "镜像拉取失败。若仓库为私有，请先在服务器执行：docker login $Reg"
+                Fail "无法拉取镜像：$AppImage"
+            }
+            Invoke-Rsh "cd $RemoteDir && APP_IMAGE='$AppImage' docker compose up -d --no-build"
+            if ($LASTEXITCODE -ne 0) { Fail "compose 启动失败，请执行 deploy.ps1 logs 查看" }
+        }
+        else {
+            Step "远端构建镜像并启动（compose up -d --build）"
+            Invoke-Rsh "cd $RemoteDir && docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build"
+            if ($LASTEXITCODE -ne 0) { Fail "compose 启动失败，请执行 deploy.ps1 logs 查看" }
+        }
 
         # ---------- 7. 健康检查 ----------
         Step "健康检查"

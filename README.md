@@ -307,13 +307,18 @@ dist\StoryForge\
 ### 4.3.2 远程服务器部署（SSH → Docker Compose）
 
 `script/deploy/` 提供一键部署到远程 Linux 服务器的能力（应用 + PostgreSQL 双容器，
-数据落远端 `/opt/storyforge/data/`）。连接参数在 `script/deploy/server.env`
-（HOST / USER / KEY / REMOTE_DIR / APP_PORT / JAVA_OPTS），换服务器或密钥只改这一个文件。
+数据落远端 `/opt/storyforge/data/`）。**部署不编译代码**：应用镜像直接取自腾讯云 TCR
+（`ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.0`），服务器上只有
+`docker-compose.yml` + `.env` 两个文件，没有源码、没有 jar、不需要 JDK。
+
+连接参数在 `script/deploy/server.env`（HOST / USER / KEY / REMOTE_DIR / APP_PORT / JAVA_OPTS），
+换服务器或密钥只改这一个文件。
 
 ```bash
 # Linux / macOS / Git Bash（工作目录 app/）
-./script/deploy/deploy.sh                # 构建 → 上传 → compose 启动 → 健康检查
-./script/deploy/deploy.sh --skip-build   # 已有新 target/app.jar 时跳过构建
+./script/deploy/deploy.sh                # 拉镜像 → 启动 → 健康检查（默认）
+./script/deploy/deploy.sh --image ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.1
+./script/deploy/deploy.sh --from-source  # 从源码构建（需 JDK/Maven/Node，仅离线兜底）
 ./script/deploy/deploy.sh status         # 容器状态 + 健康 + 磁盘/内存
 ./script/deploy/deploy.sh logs 300       # 应用日志
 ./script/deploy/deploy.sh restart        # 重启应用容器
@@ -321,19 +326,22 @@ dist\StoryForge\
 ./script/deploy/deploy.sh psql           # 进远端 PostgreSQL
 
 # Windows PowerShell
-.\script\deploy\deploy.ps1               # 参数同上（-SkipBuild、logs -Lines 300 等）
+.\script\deploy\deploy.ps1               # 参数同上（-Image、-FromSource、logs -Lines 300 等）
 .\script\deploy\deploy.bat               # cmd 薄封装
 ```
 
 **行为约定：**
 
-- **远端不在服务器上跑 Maven/Node**：本地打好的 `app.jar`（含前端）直接上传，远端 Dockerfile
-  只做「装 jar」，服务器构建几秒完成。
+- **默认只拉镜像**：上传 `docker-compose.yml` → 远端 `compose pull app` → `up -d --no-build`。
+  升级等于改镜像标签（`--image`，或改 `remote/docker-compose.yml` 的默认值）再跑一次。
+- **compose 没有 `build:` 段**：`remote/docker-compose.yml` 的 `image` 默认写死 TCR 地址，
+  现场构建能力挪到 `remote/docker-compose.build.yml`，只有 `--from-source` 才叠加它。
 - **`.env` 只在首次部署生成**（openssl 随机 JWT/加密主密钥/DB 密码/管理员密码，口令仅打印一次）；
   再次部署保留远端 `.env` 不覆盖——加密主密钥更换会导致已存 API Key 密文无法解密。
 - **2C2G 内存调优**：JVM `-Xms128m -Xmx640m`、PG `shared_buffers=128MB`（`script/deploy/remote/docker-compose.yml`），
   不要随意调大，会 OOM。
 - 首次部署自动配置腾讯云内网 Docker 镜像加速（`mirror.ccs.tencentyun.com`）。
+- **仓库为私有**时先在服务器 `docker login ccr.ccs.tencentyun.com`；当前仓库为公开可直接匿名拉取。
 - **公网访问不通 ≠ 部署失败**：先 `deploy.sh status` 看 health；health=UP 说明是云控制台防火墙
   未放行对应 TCP 端口，需在轻量服务器控制台「防火墙」中放行。
 - 同款能力已封装为 WorkBuddy 技能 `.workbuddy/skills/storyforge-deploy/`，
@@ -357,8 +365,8 @@ dist\StoryForge\
 # 打包 + 推镜像一条命令
 ./script/build.sh --image
 
-# 从镜像仓库部署（不再上传 jar，远端只 pull + up）
-./script/deploy/deploy.sh --from-registry
+# 从镜像仓库部署（默认行为，不上传 jar，远端只 pull + up）
+./script/deploy/deploy.sh
 ```
 
 **行为约定：**
@@ -371,8 +379,9 @@ dist\StoryForge\
   （服务器 `dnf install -y skopeo` 安装）。没有 skopeo 时退回 `docker push`（自动重试 3 次）。
 - **凭据不落盘**：`build.sh login` 从 `secret/tcr-password.txt` 或 `TCR_PASSWORD` 环境变量读密码；
   `server.env` 只存 `REGISTRY / IMAGE_NAME / IMAGE_TAG / REGISTRY_USER`（账号 ID）。
-- **compose 双模式**：`remote/docker-compose.yml` 的 `image: ${APP_IMAGE:-storyforge:latest}`
-  同时带 `build:`，源码部署走 `up -d --build`，仓库部署走 `pull + up -d --no-build`。
+- **compose 不再带 `build:`**：`remote/docker-compose.yml` 的
+  `image: ${APP_IMAGE:-ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.0}` 是唯一来源，
+  部署即拉镜像；源码构建走 `remote/docker-compose.build.yml` 叠加（`--from-source`）。
 - **镜像标签带 OCI 元数据**：`org.opencontainers.image.version/created/revision`，
   对应 `--build-arg APP_VERSION/BUILD_DATE/VCS_REF`，便于在 TCR 控制台识别版本。
 - 服务器 `daemon.json` 已加 `"max-concurrent-uploads": 1`（缓解 TCR 大层上传超时）。

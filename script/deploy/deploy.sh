@@ -3,9 +3,9 @@
 # StoryForge 远程部署脚本（Linux / macOS / Windows Git Bash）
 #
 #   用法：
-#     ./script/deploy/deploy.sh                 # 构建 → 上传 → 远端 compose 启动 → 健康检查
-#     ./script/deploy/deploy.sh --skip-build    # 复用已有的 target/app.jar（仅更新部署）
-#     ./script/deploy/deploy.sh --from-registry # 从 TCR 拉取镜像部署（先跑 build.sh 推送）
+#     ./script/deploy/deploy.sh                 # 拉取 TCR 镜像 → 启动 → 健康检查（默认，不编译）
+#     ./script/deploy/deploy.sh --image <地址>  # 临时换镜像地址/标签，如 .../story-forge:v1.0.1
+#     ./script/deploy/deploy.sh --from-source   # 从源码构建部署（需 JDK/Maven/Node，离线兜底）
 #     ./script/deploy/deploy.sh status          # 查看容器状态与健康
 #     ./script/deploy/deploy.sh logs [行数]      # 查看应用日志（默认 200 行）
 #     ./script/deploy/deploy.sh restart         # 重启应用容器
@@ -14,6 +14,7 @@
 #     ./script/deploy/deploy.sh --help
 #
 #   配置：同目录 server.env（HOST / USER / KEY / REMOTE_DIR / APP_PORT / 镜像仓库）
+#   默认镜像：ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.0（见 remote/docker-compose.yml）
 #   首次部署自动生成 .env（含随机密钥）；再次部署保留远端 .env 不覆盖。
 # =============================================================================
 set -euo pipefail
@@ -37,20 +38,21 @@ err()  { echo "${C_ERR}$*${C_RESET}" >&2; }
 die()  { err "错误：$*"; exit 1; }
 
 usage() {
-    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
 }
 
 # ---------- 参数 ----------
 ACTION="deploy"
+FROM_REGISTRY=1
 SKIP_BUILD=0
-FROM_REGISTRY=0
 IMAGE_OVERRIDE="${APP_IMAGE:-}"
 LOG_LINES=200
 while [ $# -gt 0 ]; do
     case "$1" in
-        --skip-build)    SKIP_BUILD=1; shift ;;
         --from-registry) FROM_REGISTRY=1; shift ;;
+        --from-source)   FROM_REGISTRY=0; shift ;;
+        --skip-build)    SKIP_BUILD=1; shift ;;
         --image)         [ $# -ge 2 ] || die "--image 缺少参数"; IMAGE_OVERRIDE="$2"; shift 2 ;;
         --help|-h)    usage ;;
         logs)         ACTION="logs"; shift
@@ -73,17 +75,17 @@ REMOTE_DIR="${REMOTE_DIR:-$REMOTE_DIR_DEFAULT}"
 APP_PORT="${APP_PORT:-8080}"
 JAVA_OPTS="${JAVA_OPTS:--Xms128m -Xmx640m}"
 
-# ---------- 镜像仓库配置（--from-registry 使用） ----------
+# ---------- 镜像仓库配置（默认部署模式） ----------
+# 与 remote/docker-compose.yml 的 image 默认值保持一致
+DEFAULT_IMAGE="ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.0"
 REGISTRY="${REGISTRY:-ccr.ccs.tencentyun.com}"
-IMAGE_NAME="${IMAGE_NAME:-}"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_NAME="${IMAGE_NAME:-jiaqiong/story-forge}"
+IMAGE_TAG="${IMAGE_TAG:-v1.0.0}"
 APP_IMAGE="${IMAGE_OVERRIDE:-}"
-if [ -z "$APP_IMAGE" ] && [ -n "$IMAGE_NAME" ]; then
+if [ -z "$APP_IMAGE" ]; then
     APP_IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
 fi
-if [ "$FROM_REGISTRY" -eq 1 ]; then
-    [ -n "$APP_IMAGE" ] || die "--from-registry 需要在 server.env 配置 IMAGE_NAME/IMAGE_TAG，或用 --image 指定完整镜像地址"
-fi
+[ -n "$APP_IMAGE" ] || APP_IMAGE="$DEFAULT_IMAGE"
 
 # KEY 支持相对 server.env 所在目录的路径
 if [ -n "$KEY" ] && [[ "$KEY" != /* ]] && [[ ! "$KEY" =~ ^[A-Za-z]: ]]; then
@@ -133,15 +135,16 @@ psql)
     ;;
 # =============================================================================
 deploy)
-    # ---------- 1. 构建 ----------
+    # ---------- 1. 构建（仅 --from-source 才编译） ----------
     if [ "$FROM_REGISTRY" -eq 1 ]; then
-        step "镜像仓库模式：跳过本地构建与 jar 上传"
+        step "镜像模式：本地不构建、不上传 jar，直接使用 TCR 镜像"
         info "镜像：${APP_IMAGE}"
+        [ "$SKIP_BUILD" -eq 1 ] && warn "--skip-build 在镜像模式下无意义，已忽略"
     elif [ "$SKIP_BUILD" -eq 1 ]; then
         [ -f "${APP_HOME}/target/app.jar" ] || die "--skip-build 需要已有 target/app.jar，先运行 ./script/build.sh"
         warn "跳过构建，使用现有 target/app.jar（$(date -r "${APP_HOME}/target/app.jar" '+%F %T' 2>/dev/null || echo 时间未知)）"
     else
-        step "构建（复用 script/build.sh）"
+        step "源码构建（复用 script/build.sh）"
         bash "${SCRIPT_DIR}/../build.sh" --skip-typecheck
         [ -f "${APP_HOME}/target/app.jar" ] || die "构建后未找到 target/app.jar"
     fi
@@ -156,12 +159,13 @@ deploy)
     STAGING="${APP_HOME}/target/deploy-staging"
     rm -rf "$STAGING" 2>/dev/null || true
     mkdir -p "$STAGING"
+    cp "${SCRIPT_DIR}/remote/docker-compose.yml" "$STAGING/docker-compose.yml"
     if [ "$FROM_REGISTRY" -eq 0 ]; then
         cp "${APP_HOME}/target/app.jar" "$STAGING/app.jar"
+        cp "${SCRIPT_DIR}/remote/Dockerfile" "$STAGING/Dockerfile"
+        cp "${SCRIPT_DIR}/remote/docker-compose.build.yml" "$STAGING/docker-compose.build.yml"
+        cp "${APP_HOME}/docker/start.sh" "$STAGING/start.sh"
     fi
-    cp "${SCRIPT_DIR}/remote/Dockerfile" "$STAGING/Dockerfile"
-    cp "${SCRIPT_DIR}/remote/docker-compose.yml" "$STAGING/docker-compose.yml"
-    cp "${APP_HOME}/docker/start.sh" "$STAGING/start.sh"
 
     # ---------- 3. 远端目录与 .env（只在首次生成，避免覆盖已改密码/密钥） ----------
     step "同步到 ${SSH_USER}@${HOST}:${REMOTE_DIR}"
@@ -198,10 +202,11 @@ EOF
 
     # ---------- 4. 上传 ----------
     if [ "$FROM_REGISTRY" -eq 1 ]; then
-        rcp "$STAGING/Dockerfile" "$STAGING/docker-compose.yml" "$STAGING/start.sh" \
-            "${SSH_USER}@${HOST}:${REMOTE_DIR}/"
+        # 镜像模式只需 compose 文件，服务器不接触任何源码/构建产物
+        rcp "$STAGING/docker-compose.yml" "${SSH_USER}@${HOST}:${REMOTE_DIR}/"
     else
-        rcp "$STAGING/app.jar" "$STAGING/Dockerfile" "$STAGING/docker-compose.yml" "$STAGING/start.sh" \
+        rcp "$STAGING/app.jar" "$STAGING/Dockerfile" "$STAGING/docker-compose.yml" \
+            "$STAGING/docker-compose.build.yml" "$STAGING/start.sh" \
             "${SSH_USER}@${HOST}:${REMOTE_DIR}/"
     fi
 
@@ -211,14 +216,17 @@ EOF
         rsh "mkdir -p /etc/docker && printf '{\"registry-mirrors\":[\"https://mirror.ccs.tencentyun.com\",\"https://docker.m.daocloud.io\"]}' > /etc/docker/daemon.json && (systemctl restart docker || service docker restart) && sleep 2" || warn "镜像加速配置失败，继续尝试直连"
     fi
 
-    # ---------- 6. 构建镜像并启动 ----------
+    # ---------- 6. 拉镜像并启动 ----------
     if [ "$FROM_REGISTRY" -eq 1 ]; then
-        step "从镜像仓库拉取并启动（docker compose pull → up --no-build）"
-        rsh "cd ${REMOTE_DIR} && APP_IMAGE='${APP_IMAGE}' docker compose pull app"
+        step "拉取镜像并启动（docker compose pull → up -d --no-build）"
+        if ! rsh "cd ${REMOTE_DIR} && APP_IMAGE='${APP_IMAGE}' docker compose pull app"; then
+            warn "镜像拉取失败。若仓库为私有，请先在服务器执行：docker login ${REGISTRY}"
+            die "无法拉取镜像：${APP_IMAGE}"
+        fi
         rsh "cd ${REMOTE_DIR} && APP_IMAGE='${APP_IMAGE}' docker compose up -d --no-build"
     else
         step "远端构建镜像并启动（compose up -d --build）"
-        rsh "cd ${REMOTE_DIR} && docker compose up -d --build"
+        rsh "cd ${REMOTE_DIR} && docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build"
     fi
 
     # ---------- 7. 健康检查 ----------
