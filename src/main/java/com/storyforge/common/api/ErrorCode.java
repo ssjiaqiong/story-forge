@@ -11,8 +11,8 @@ import lombok.Getter;
  *   <li>{@code 1xxxx}    —— 通用（参数、资源）</li>
  *   <li>{@code 2xxxx}    —— 认证与权限</li>
  *   <li>{@code 3xxxx}    —— 业务规则</li>
- *   <li>{@code 4xxxx}    —— 创作域（预留）</li>
- *   <li>{@code 5xxxx}    —— AI / 流水线（预留）</li>
+ *   <li>{@code 4xxxx}    —— 创作域</li>
+ *   <li>{@code 5xxxx}    —— AI 调用</li>
  *   <li>{@code 9xxxx}    —— 系统</li>
  * </ul>
  */
@@ -39,16 +39,12 @@ public enum ErrorCode {
     USERNAME_RECYCLED(30002, "该用户名属于已被删除的账号，请先恢复该账号", 400),
     USER_NOT_FOUND(30003, "用户不存在", 404),
     REGISTRATION_CLOSED(30030, "系统已关闭自助注册，账号由超级管理员创建", 403),
-    READONLY_SCOPE(30031, "该资源为只读，禁止修改", 403),
     SELF_OPERATION_FORBIDDEN(30032, "不能对当前登录账号执行该操作", 400),
     LAST_SUPER_ADMIN(30033, "系统至少需保留一个启用状态的超级管理员", 400),
-    USER_ALREADY_DELETED(30034, "该用户已被删除", 400),
 
     /* ---------- 4xxxx 创作域 ---------- */
     NOVEL_TITLE_DUPLICATED(40001, "小说标题重复", 400),
     AI_CONFIG_MISSING(40002, "尚未配置可用的 AI 接口", 400),
-    BODY_NOT_QUALIFIED(40003, "正文未达到质量要求", 400),
-    EVENT_POOL_INSUFFICIENT(40004, "事件池数量不足", 400),
     PROMPT_VARIABLE_INVALID(40005, "提示词模板变量非法", 400),
     AI_CONFIG_NOT_FOUND(40006, "AI 接口配置不存在", 404),
     AI_CONFIG_NAME_EXISTS(40007, "接口名称已存在", 400),
@@ -74,8 +70,6 @@ public enum ErrorCode {
     FACTION_MEMBER_NOT_FOUND(40027, "势力成员不存在", 404),
     FACTION_MEMBER_EXISTS(40028, "该角色已在此势力中任职", 400),
     SEARCH_CONFIG_NOT_FOUND(40029, "搜索源不存在", 404),
-    SEARCH_UNAVAILABLE(40030, "还没有可用的联网搜索源，请到「设置 → 联网搜索」配置", 400),
-    SEARCH_FAILED(40031, "联网搜索失败", 502),
     OUTLINE_GENERATE_EMPTY(40032, "AI 没有生成可用的大纲，请换一种描述再试", 400),
     CONTENT_GENERATE_EMPTY(40033, "AI 没有生成可用的正文，请换一种描述再试", 400),
     ITEM_GENERATE_EMPTY(40034, "AI 没有生成可用的物品，请换一种描述再试", 400),
@@ -106,11 +100,9 @@ public enum ErrorCode {
     AGENT_OPERATION_INVALID(40060, "智能助手返回了无法识别的修改指令", 400),
     CHAPTER_LOCKED(40061, "本章已标记为「已完成」，正文与标题不可修改；如需修改请先把状态改回草稿或写作中", 400),
 
-    /* ---------- 5xxxx AI / 流水线 ---------- */
+    /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),
     AI_PARSE_FAILED(50002, "结构化解析失败", 500),
-    JOB_CANCELED(50003, "作业已取消", 400),
-    CONTEXT_MISSING(50004, "上下文缺失", 400),
     AI_MODEL_LIST_FAILED(50005, "模型列表获取失败", 502),
 
     /* ---------- 9xxxx 系统 ---------- */

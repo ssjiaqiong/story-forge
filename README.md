@@ -2,12 +2,14 @@
 
 AI 长篇小说创作平台。**单用户空间**（用户即数据隔离单元，无租户概念）+ **超级管理员平台功能**（用户管理、小说管理）。
 
-- 需求规格：`../docs/01-需求规格说明书.md`（v1.5）
-- 详细设计：`../docs/02-详细设计说明书.md`（v1.2）
-- 未实现清单：`../docs/03-未实现功能清单.md`（其余条目已标注废弃）
-- 三期排期：`../docs/04-三期功能排期.md`
+**文档**（随代码版本管理，只描述已实现功能）：
 
-> 本目录 `app/` 为**工程代码根目录**，与工作目录下的 `docs/` 平级；下文所有相对路径均以 `app/` 为起点。
+- [需求规格说明书](./docs/01-需求规格说明书.md)
+- [详细设计说明书](./docs/02-详细设计说明书.md)
+- [数据库兼容与部署运维](./docs/03-数据库兼容与部署运维.md)
+- [文档索引](./docs/README.md)
+
+> 本目录即工程根目录，下文所有相对路径均以 `app/` 为起点。
 
 ---
 
@@ -28,49 +30,64 @@ AI 长篇小说创作平台。**单用户空间**（用户即数据隔离单元�
 ## 2. 目录结构
 
 ```text
-private workspaces/                       # 工作目录
-├── docs/                                需求规格说明书、详细设计说明书
-└── app/                                 ★ 工程代码根目录（后端 + 前端 + 容器化）
-    ├── .gitignore
-    ├── README.md                        本文件
-    ├── pom.xml                          Maven 构建入口（单模块）
-    ├── script/                          发布脚本（编译 / 启动，Windows + Linux）
-    │   ├── build.bat build.ps1 build.sh 编译：前端构建 + 静态合并 + 后端打包
-    │   └── start.bat start.ps1 start.sh 启动：环境变量兜底 + 等 DB + 启动 jar
-    ├── docker/
-    │   ├── Dockerfile                   三阶段构建（Node → Maven → JRE）
-    │   ├── docker-compose.yml           app + postgres + 卷挂载
-    │   ├── start.sh                     容器入口：等待 DB 就绪后启动服务
-    │   └── .env.example                 环境变量样例
-    ├── src/main/java/com/storyforge/
-    │   ├── StoryForgeApplication.java
-    │   ├── bootstrap/                   启动种子数据（初始超管）
-    │   ├── common/
-    │   │   ├── api/                     R / PageResult / PageQuery / ErrorCode
-    │   │   ├── exception/               BizException / GlobalExceptionHandler
-    │   │   ├── context/                 用户上下文 / traceId 过滤器
-    │   │   ├── security/                JWT、认证过滤器、SecurityConfig、令牌黑名单
-    │   │   ├── ratelimit/               @RateLimit + 令牌桶注册表 + 切面
-    │   │   ├── audit/                   @Audit + 审计落库
-    │   │   └── util/                    WebUtils
-    │   ├── config/                      MyBatis-Plus / WebMvc / OpenAPI / 配置属性
-    │   ├── infra/storage/               本地文件存储
-    │   └── modules/
-    │       ├── auth/                    认证：controller / service / dto
-    │       └── user/                    用户与超管用户管理：controller / service / mapper / entity / dto
-    ├── src/main/resources/
-    │   ├── application.yml / application-dev.yml / application-prod.yml
-    │   ├── logback-spring.xml
-    │   ├── db/migration/V1__init_platform_schema.sql
-    │   └── mapper/UserMapper.xml
-    └── web/                             前端工程（Vue 3 + Vite）
-        ├── vite.config.ts               dev 代理 /api → 127.0.0.1:8080
-        └── src/{api,router,stores,layouts,views,styles,utils}
+app/                                      ★ 工程根目录（后端 + 前端 + 部署 + 文档）
+├── README.md                             本文件
+├── pom.xml                               Maven 构建入口（单模块）
+├── docs/                                 需求 / 详细设计 / 数据库与部署运维
+├── script/
+│   ├── build.bat|ps1|sh                  编译：前端构建 + 静态合并 + 后端打包（--image 顺便推镜像）
+│   ├── start.bat|ps1|sh                  启动：环境变量兜底 + 等 DB + 启动 jar
+│   ├── package-win.bat|ps1               Windows 桌面版打包（jpackage）
+│   ├── gen-icon.ps1                      生成应用图标
+│   ├── db/gen-baseline.mjs               从 PostgreSQL 基线派生 MySQL / SQLite 基线
+│   └── deploy/
+│       ├── deploy.bat|ps1|sh             远程部署 / 状态 / 日志 / 重启 / psql
+│       ├── build.sh                      构建镜像并推送 TCR（skopeo）
+│       ├── server.env(.example)          部署目标配置（真实文件不入库）
+│       └── remote/                       Dockerfile + docker-compose.yml + nginx 配置模板
+├── docker/
+│   ├── Dockerfile                        多阶段构建（Node → Maven → JRE）
+│   ├── docker-compose.yml                app + postgres + 卷挂载
+│   ├── start.sh                          容器入口：等待 DB 就绪后启动服务
+│   └── .env.example                      环境变量样例
+├── src/main/java/com/storyforge/
+│   ├── StoryForgeApplication.java
+│   ├── bootstrap/                        启动种子（初始超管、内置灵感技能）
+│   ├── common/
+│   │   ├── api/                          R / PageResult / PageQuery / ErrorCode
+│   │   ├── exception/                    BizException / GlobalExceptionHandler
+│   │   ├── context/                      用户上下文 / 数据权限放行 / traceId
+│   │   ├── security/                     JWT、认证过滤器、SecurityConfig、令牌黑名单
+│   │   ├── ratelimit/                    @RateLimit + 令牌桶 + 切面
+│   │   ├── audit/                        @Audit + 审计落库
+│   │   └── util/
+│   ├── config/                           MyBatis-Plus / 数据权限 / WebMvc / Jackson / 各类配置属性
+│   ├── infra/
+│   │   ├── ai/                           OpenAiClient / ImageGenClient / LenientJson / prompt/
+│   │   ├── db/                           方言探测 + databaseId 映射 + SQLite 时间 TypeHandler
+│   │   ├── search/                       搜索引擎客户端
+│   │   ├── storage/                      封面本地存储
+│   │   └── text/                         汉字统计等
+│   ├── modules/
+│   │   ├── auth/  user/                  认证、超管用户管理
+│   │   ├── ai/  search/                  AI 接口 / 场景绑定 / 提示词模板 / 联网搜索
+│   │   ├── novel/  novel/agent/          小说详情、封面、智能助手
+│   │   ├── bookshelf/                    书架、设定、章节、人物、势力、物品、事件、分析、导入导出、拆书
+│   │   ├── inspiration/                  灵感会话与技能
+│   │   └── dashboard/                    仪表盘聚合
+│   └── desktop/                          桌面引导（应用根 / 端口 / 单实例 / 开浏览器）
+├── src/main/resources/
+│   ├── application.yml / -mysql.yml / -sqlite.yml / -dev.yml
+│   ├── logback-spring.xml
+│   ├── db/migration/{postgresql,mysql,sqlite}/V1__baseline.sql   （MySQL/SQLite 由脚本派生）
+│   ├── mapper/*.xml
+│   └── static/                           前端构建产物（打进 jar）
+└── web/                                  前端源码（与 src 平级的独立工程）
 ```
 
 ---
 
-## 3. 本次迭代范围
+## 3. 功能范围（全部已交付）
 
 | 模块 | 状态 |
 |---|---|
@@ -82,7 +99,7 @@ private workspaces/                       # 工作目录
 | 设置中心「AI 接口管理」：端点增删改查 / 默认端点 / 启停 / 连通性测试 / 模型拉取 | ✅ 已完成 |
 | AI 提示词：按 RTCO 结构统一（角色—任务—上下文—输出—约束），设定类要求规则与代价、人物要求欲望与缺陷、正文要求场景推进与反 AI 味；灵感内置技能支持旧版自动升级 | ✅ 已完成 |
 | 设置中心「联网搜索」：免密钥搜索源（必应/DuckDuckGo/维基百科）+ SearXNG / Tavily / Serper，默认源、启停、测试与试搜；事件/大纲/正文三场景独立绑定 | ✅ 已完成 |
-| 设置中心「场景绑定」：15 个 AI 场景的端点与模型参数覆盖（只登记已有调用的场景，不放占位项；蓝图四段可各绑不同模型） | ✅ 已完成 |
+| 设置中心「场景绑定」：20 个 AI 场景的端点与模型参数覆盖（只登记已有调用的场景，不放占位项；蓝图四段可各绑不同模型） | ✅ 已完成 |
 | API Key 加密存储（AES-256-GCM）+ 掩码回显 | ✅ 已完成 |
 | 灵感模式：单会话多轮对话（上下文入库）/ 技能选择与编辑（修改仅本人生效）/ 清空上下文 / 一键创建小说 | ✅ 已完成 |
 | 书架：卡片墙 / 关键字与状态筛选 / AI 分段生成设定（世界观·背景·简介·冲突·人物，带百分比进度，单段超时 5 分钟）/ 保存开书 / 只建草稿 | ✅ 已完成 |
@@ -92,12 +109,13 @@ private workspaces/                       # 工作目录
 | 按分析修改（分析面板 → 展开报告 → 「按分析修改」）：勾选报告里要修的问题（大纲没做到 / 审稿建议 / AI 味信号 / AI 味原句 / 字数问题，可按分组全选），也可直接写自己的修改要求，选修改幅度（轻度/中度/重度）→ AI 只改这些地方并返回新稿 → **左右分栏对比**（段落级对齐 + 段内逐字高亮，删红增绿，可「只看改动」，附改动说明与增删字数）→ 保存后自动重新分析本章。**所有已分析的章节都能改**（不限最后一章）；只生成不落库，未点保存不会动正文 | ✅ 已完成 |
 | **AI 封面生成**：AI 接口管理支持**图像接口**（接口类型：文本 / 图像，两类默认端点独立；适配硅基流动、OpenAI 兼容、火山方舟（豆包 Seedream）、智谱 CogView、阿里云百炼（通义万相，异步任务）、魔搭 ModelScope 六类平台，新增时按平台预填地址/模型/尺寸）。书架卡片「⋯」→「生成封面」打开封面管理：按书名/题材/简介自动拼提示词，**封面风格下拉**（动漫 / 真人写实 / CG 3D / 水墨国风 / 油画 / 扁平插画）+ 可补充画面描述与负面提示词 → 生成即落库落盘（`user_id/novel_id/uuid.jpg`，独立卷挂载）→ **封面文字合成**：勾选「书名」「作者名」后由本地字体清晰渲染到封面下方（白字描边 + 底部衬条，超长自动折行缩字号，不用模型画字避免错别字）；文案优先级 = 自定义输入 → 小说书名/笔名 → AI 起名兜底（`COVER_TITLE` 场景，失败静默回退）→ **一部小说最多 5 张**，可设主封面、删除；书架卡片直接展示封面，悬停左右箭头 + 圆点切换（n/5）。取图走登录态接口，不做公开静态路径；删除小说级联清理封面记录与文件 | ✅ 已完成 |
 | 小说工作台：点击封面进入，菜单含基本信息（含 5 类设定）、大纲（按卷分章 + AI 生成多章大纲：注入世界观、背景、角色档案、人物关系、事件池与已有章节，每章输出标题、摘要、参与人物与关联事件）、人物（档案 + 关系视图：力导向连线图与关系列表 + AI 按提示语创建角色与关系）、势力（公司/帮派/国家等，成员职位自由填写、一人可多势力任职）、事件（AI 生成、关联参与角色、必要时自动补建角色（单事件≤3）+ 四档状态）、物品（物品描述 + 说明分开记录，状态：活跃/摧毁/废弃/遗失/已消耗，数量可空，AI 按提示语生成）、正文（手动编辑 + AI 写本章：本章大纲与关联事件、参与人物档案、物品势力、上一章结尾 500 字、前 10 章大纲、前 50 章概括，预计字数默认 2500 且只计汉字）/ 删除级联；事件/大纲/正文默认联网检索资料并展示引用来源 | ✅ 已完成 |
-| 超管「小说管理」：跨用户只读列表（小说名称、创建账号、创建时间、最后更新时间、状态：创作中/完结/废弃、字数、章节数；支持书名/账号关键字、状态、创建时间筛选与四种排序）+「查看目录」（按卷分组目录、单章大纲与正文按需加载，只读） | ✅ 已完成 |
+| 超管「小说管理」：跨用户只读列表（小说名称、创建账号、创建时间、最后更新时间、状态：创作中/完结/废弃、字数、章节数；支持书名/账号关键字、状态、创建时间筛选与四种排序，可按正常/已删除/全部筛选）+「查看目录」（按卷分组目录、单章大纲与正文按需加载，只读）+ 对**已被用户逻辑删除**的小说执行物理清除（连带章节、要素、封面文件与助手会话，不可恢复；单次批量≤50 本） | ✅ 已完成 |
 | 主题切换：浅色 / 深色 / 跟随系统三档，顶栏一键切换；语义 CSS 变量（`--sf-*`）驱动全站，Element Plus 暗色变量联动，首屏内联脚本防白闪，关系连线图双套配色 | ✅ 已完成 |
 | 人物属性与背包：角色弹窗新增「属性」「背包」两个页签。属性 = 当前值快照（数值/文本 + 单位，常用属性一键添加），背包三类条目（关联物品档案 / 货币如银两灵石 / 自由文本杂项，含数量、单位、状态：持有·遗失·已消耗）；正文与大纲生成会把角色当前属性、随身物品注入提示词，章节分析会把本章引起的属性与背包变化同时写履历并**更新当前值** | ✅ 已完成 |
-| 提示词模板管理（`/settings/prompts`）：按场景定制「指令段」（正文 / 大纲 / 蓝图四段 / 角色 / 物品 / 事件 / 章节分析 / 状态同步 / 按分析修改 / 要素抽取，共 13 个场景开放），**输出格式由系统统一封装并锁定**，用户改不到 JSON 字段；支持变量芯片插入（`{{novelTitle}}` 等，白名单校验）、示例变量预览（不调 AI）、恢复默认。灵感对话与拆书改编不在此维护（各有入口 / 系统内置），页面上直接不出现 | ✅ 已完成 |
+| 提示词模板管理（`/settings/prompts`）：按场景定制「指令段」（正文 / 大纲 / 总纲 / 蓝图四段 / 角色 / 物品 / 事件 / 章节分析 / 状态同步 / 按分析修改 / 封面 / 要素抽取，共 15 个场景开放），**输出格式由系统统一封装并锁定**，用户改不到 JSON 字段；支持变量芯片插入（`{{novelTitle}}` 等，白名单校验）、示例变量预览（不调 AI）、恢复默认。灵感对话、拆书改编、智能助手、势力生成、封面起名不在此维护，页面上直接不出现 | ✅ 已完成 |
+| 小说导入导出：卡片下拉「导出 JSON」导出整本（19 个分区 + 封面 Base64）；工具栏「导入」在当前账号下重建，旧 ID 全部重映射、重名自动加序号 | ✅ 已完成 |
+| 小说智能助手：工作台自然语言下指令，助手转成结构化操作直接改设定/人物/关系/势力/物品/事件/总纲/章节，支持多轮迭代、任务轮询与取消 | ✅ 已完成 |
 | 仪表盘（`/dashboard`）：小说总数与状态分布（草稿 / 连载中 / 已完结 / 已归档）、累计字数与平均每章字数、章节完成度、今日与本月 Token 消耗、近 14 天写作量与 Token 趋势（可切换指标）、近 30 天各场景 AI 消耗占比（超过 6 个场景自动合并「其他」）、最近编辑的 4~5 本书、账号与登录信息（本次 / 上次登录时间与 IP、已使用天数、累计调用次数）；单接口聚合，未登录态的仪表盘不再占用首屏其它请求 | ✅ 已完成 |
-| 提示词模板管理 / 大纲 / 章节 / 设定库细分 / 流水线 | ⏳ 后续迭代（模板管理已完成，原清单中其余条目见 `03-未实现功能清单.md`，均已标注废弃） |
 
 ---
 
@@ -484,15 +502,17 @@ java -jar target/app.jar
 
 读接口 600 次/分钟/用户，写接口 120 次/分钟/用户（进程内令牌桶）。
 
-### 6.2.1 超管小说管理 `/api/admin/novels`（需 `SUPER_ADMIN`，只读）
+### 6.2.1 超管小说管理 `/api/admin/novels`（需 `SUPER_ADMIN`，只读 + 物理清除）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `` | 全平台小说分页：`page/size/keyword/state/createdFrom/createdTo/sort`（`keyword` 匹配书名/账号/昵称，`state` 取 CREATING / COMPLETED / ABANDONED，`sort` 取 CREATED_DESC / UPDATED_DESC / WORDS_DESC / CHAPTERS_DESC） |
+| GET | `` | 全平台小说分页：`page/size/keyword/state/scope/createdFrom/createdTo/sort`（`keyword` 匹配书名/账号/昵称，`state` 取 CREATING / COMPLETED / ABANDONED，`scope` 取 NORMAL / DELETED / ALL，`sort` 取 CREATED_DESC / UPDATED_DESC / WORDS_DESC / CHAPTERS_DESC） |
 | GET | `/{id}` | 小说基本信息 + 章节目录（不含正文） |
 | GET | `/{id}/chapters/{chapterId}` | 单章详情（正文、大纲摘要、字数） |
+| DELETE | `/{id}` | **物理清除**：仅对已逻辑删除的小说有效，连带删除章节、要素、封面文件与助手会话，不可恢复 |
+| POST | `/purge` | 批量物理清除，单次最多 50 本，逐本返回结果 |
 
-无写接口；跨用户读取通过 `DataPermissionContext.withoutIsolation(...)` 在单次查询内放行 `user_id` 隔离。
+不提供修改他人创作内容的接口；跨用户读取通过 `DataPermissionContext.withoutIsolation(...)` 在单次查询内放行 `user_id` 隔离。物理清除记审计 `ADMIN_NOVEL_PURGE` / `ADMIN_NOVEL_PURGE_BATCH`。
 
 ### 6.3 AI 接口管理 `/api/ai-configs`（登录用户，按用户隔离）
 
@@ -515,7 +535,7 @@ API Key 以 **AES-256-GCM** 加密入库（`v1:base64(iv|ct)`），主密钥来�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `` | 16 个 AI 场景及当前绑定（未绑定字段为空）；文本场景只能绑文本接口、封面场景只能绑图像接口（错绑 `40057`） |
+| GET | `` | 20 个 AI 场景及当前绑定（未绑定字段为空）；文本场景只能绑文本接口、封面场景只能绑图像接口（错绑 `40057`） |
 | PUT | `` | 批量保存：`{"items":[{"code":"BODY_GEN","aiConfigId":1,"model":"gpt-4o","temperature":0.9,"maxTokens":800}]}`；`aiConfigId` 为 `null` 表示清除绑定、回落到默认端点 |
 
 ### 6.5 人物属性与背包 `/api/bookshelf`（登录用户，按用户隔离）
@@ -541,10 +561,11 @@ API Key 以 **AES-256-GCM** 加密入库（`v1:base64(iv|ct)`），主密钥来�
 | DELETE | `/{scene}` | 恢复默认（逻辑删除覆盖行） |
 | POST | `/{scene}/preview` | 用示例变量渲染完整提示词，**不调用 AI** |
 
-开放编辑的场景（13 个）：`BODY_GEN`、`OUTLINE_GEN`、`BLUEPRINT_WORLDVIEW`、`BLUEPRINT_BACKGROUND`、
+开放编辑的场景（15 个）：`BODY_GEN`、`OUTLINE_GEN`、`MASTER_OUTLINE`、`BLUEPRINT_WORLDVIEW`、`BLUEPRINT_BACKGROUND`、
 `BLUEPRINT_CONFLICT`、`BLUEPRINT_CHARACTER`、`CHARACTER_BUILD`、`ITEM_BUILD`、`EVENT_SUPPLY`、
-`ANALYSIS_GEN`、`SYNC_EXTRACT`、`CHAPTER_REVISE`、`NOVEL_EXTRACT`；
-灵感对话（`INSPIRATION_CHAT`）与拆书改编（`DECONSTRUCT`）不出现在列表中，直接访问返回 `40049`。
+`ANALYSIS_GEN`、`SYNC_EXTRACT`、`CHAPTER_REVISE`、`COVER_IMAGE`、`NOVEL_EXTRACT`；
+灵感对话（`INSPIRATION_CHAT`）、拆书改编（`DECONSTRUCT`）、小说智能助手（`NOVEL_AGENT`）、势力生成（`FACTION_BUILD`）、
+封面起名（`COVER_TITLE`）不出现在列表中，直接访问返回 `40049`。
 最终 system 提示 = 用户指令段 + 系统追加的输出格式契约，后者不入库、不可改。
 
 ### 6.7 仪表盘 `/api/dashboard`（登录用户，按用户隔离）
@@ -565,7 +586,7 @@ API Key 以 **AES-256-GCM** 加密入库（`v1:base64(iv|ct)`），主密钥来�
 | `scenes[]` | 近 30 天各场景：`scene/label/group/calls/tokens/percent`，按 token 降序 |
 | `recentNovels[]` | 最近编辑 5 本：`id/title/genre/status/statusLabel/chapterCount/wordCount/updatedAt` |
 
-统计口径见 `docs/02-详细设计说明书.md` 3.25；Token 全部来自 `t_ai_usage`（每次模型调用后由 `AiUsageService` 写入，失败也记一行）。
+统计口径见 `docs/02-详细设计说明书.md` §3.9（仪表盘）；Token 全部来自 `t_ai_usage`（每次模型调用后由 `AiUsageService` 写入，失败也记一行）。
 
 ### 6.8 章节分析与按分析修改 `/api/bookshelf`（登录用户，按用户隔离）
 
@@ -603,9 +624,9 @@ API Key 以 **AES-256-GCM** 加密入库（`v1:base64(iv|ct)`），主密钥来�
 | `0` | 成功 | — |
 | `1xxxx` | 通用 | `10001` 参数校验失败、`10002` 资源不存在、`10003` 方法不支持 |
 | `2xxxx` | 认证与权限 | `20001` 未登录/令牌失效、`20002` 用户名或密码错误、`20003` 账号已停用、`20004` 需先修改初始口令、`20005` 原口令不正确、`20006` 无权限 |
-| `3xxxx` | 业务规则 | `30001` 用户名已存在、`30002` 用户名属于已删除账号、`30003` 用户不存在、`30030` 注册已关闭、`30031` 超管只读、`30032` 不能对自己执行该操作、`30033` 至少保留一个启用的超管、`30034` 用户已删除 |
+| `3xxxx` | 业务规则 | `30001` 用户名已存在、`30002` 用户名属于已删除账号、`30003` 用户不存在、`30030` 注册已关闭、`30032` 不能对自己执行该操作、`30033` 至少保留一个启用的超管 |
 | `4xxxx` | 创作域 / 设置中心 | `40001`~`40005` 创作域预留；`40006` AI 配置不存在、`40007` 接口名称已存在、`40008` 场景编码非法、`40009` 接口已停用、`40010` 接口被场景绑定、`40043` 属性已存在、`40044` 属性不存在、`40045` 背包条目已存在、`40046` 背包条目不存在、`40047` 关联物品不存在、`40049` 场景未开放模板编辑、`40050` 模板内容不合法、`40051` 本章未分析无法按分析修改、`40052` 未生成可用修改稿、`40053` 未配置图像接口、`40054` 封面生成失败、`40055` 封面不存在、`40056` 封面数量达上限、`40057` 场景与接口类型不匹配、`40058` 封面文件丢失、`40059` 势力生成失败、`40060` 智能助手指令无法识别、`40061` 已完成章节禁止编辑正文与标题 |
-| `5xxxx` | AI / 流水线 | `50001` AI 调用失败、`50002` 结构化解析失败、`50003` 作业已取消、`50004` 上下文缺失、`50005` 模型列表获取失败 |
+| `5xxxx` | AI | `50001` AI 调用失败、`50002` 结构化解析失败、`50005` 模型列表获取失败 |
 | `9xxxx` | 系统 | `90001` 内部错误、`90002` 触发限流 |
 
 ---
@@ -657,11 +678,3 @@ API Key 以 **AES-256-GCM** 加密入库（`v1:base64(iv|ct)`），主密钥来�
 | 提示词页编译失败 | `npm run build` 报 `Error parsing JavaScript expression: Unexpected token` | 模板里字面量 `{{var}}` 被 Vue 当成插值解析；改为 `varToken()` 拼接生成占位符 |
 | 页签样式互相污染 | 角色弹窗的「档案/属性/背包」页签与人物菜单的「人物档案/关系视图」共用 `character-tabs` 类，`margin-top` 被后者覆盖 | 弹窗页签改名 `character-asset-tabs` |
 | 属性数值改不动 | 同一次请求内先 wrapper 更新再 `updateById`，第二次因乐观锁版本已变而失败 | `updateInventory` 攒成一个 `LambdaUpdateWrapper` 一次 UPDATE（含 `clearQuantity`） |
-
----
-
-## 9. 后续迭代建议
-
-1. 设置中心：AI 接口参数（OpenAI 协议）+ 全场景可编辑提示词模板。
-3. 小说域：小说 / 世界观 / 卷 / 大纲 / 章节 / 人物 / 物品 / 资产 / 事件 / 势力 / 时间线。
-4. 创作流水线引擎：异步作业 + SSE 进度 + 质量闸门 + 状态同步审核。
