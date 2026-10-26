@@ -1,6 +1,20 @@
 <template>
   <div class="page-container">
     <el-card shadow="never" class="prompt-card">
+      <div class="io-toolbar">
+        <div class="io-toolbar-title">提示词模板</div>
+        <div class="io-toolbar-actions">
+          <el-button size="small" :icon="Download" @click="exportVisible = true">导出</el-button>
+          <el-button size="small" :icon="Upload" :loading="importing" @click="pickImportFile">导入</el-button>
+          <input
+            ref="importInputRef"
+            type="file"
+            accept="application/json,.json"
+            class="io-hidden-input"
+            @change="onImportFileChange"
+          />
+        </div>
+      </div>
       <div class="prompt-layout">
         <!-- ==================== 左：场景列表 ==================== -->
         <aside class="scene-aside">
@@ -150,20 +164,118 @@
         <el-button type="primary" @click="previewVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 导出 -->
+    <el-dialog v-model="exportVisible" title="导出提示词模板" width="520px" destroy-on-close>
+      <p class="io-tip">导出为 JSON 文件，可在另一台机器 / 另一个账号导入。</p>
+      <el-checkbox v-model="exportOnlyOverridden">
+        只导出我改过的场景
+        <span class="io-sub">（推荐；系统默认模板随版本升级会变，导回去没有意义）</span>
+      </el-checkbox>
+      <template #footer>
+        <el-button @click="exportVisible = false">取消</el-button>
+        <el-button type="primary" :loading="exporting" @click="doExport">导出</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 导入：先预览，再确认 -->
+    <el-dialog v-model="importVisible" title="导入提示词模板" width="720px" destroy-on-close>
+      <!-- 结果态 -->
+      <template v-if="importResult">
+        <el-alert
+          :type="importResult.imported > 0 ? 'success' : 'warning'"
+          :closable="false"
+          show-icon
+          :title="`共 ${importResult.total} 条，成功导入 ${importResult.imported} 条，跳过 ${importResult.skipped} 条（${modeLabel(importResult.mode)}）`"
+        />
+        <ul class="io-list">
+          <li v-for="(it, i) in importResult.items" :key="`r-${i}`">
+            <span :class="it.status === 'IMPORTED' ? 'io-ok' : 'io-skip'">
+              {{ it.status === 'IMPORTED' ? '导入' : '跳过' }}
+            </span>
+            {{ it.displayName || it.scene }}
+            <span v-if="it.message" class="io-msg">— {{ it.message }}</span>
+          </li>
+        </ul>
+      </template>
+      <!-- 预览态 -->
+      <template v-else>
+        <el-alert
+          v-if="previewPackage"
+          class="mb12"
+          type="info"
+          :closable="false"
+          show-icon
+          :title="`文件含 ${previewPackage.scenes.length} 条模板`"
+        />
+        <el-table :data="previewRows" size="small" max-height="320">
+          <el-table-column prop="displayName" label="场景" min-width="140" show-overflow-tooltip />
+          <el-table-column prop="scene" label="编码" min-width="150" show-overflow-tooltip />
+          <el-table-column label="当前" width="80">
+            <template #default="{ row }">
+              <el-tag v-if="row.overridden" size="small" type="warning" effect="plain">已改</el-tag>
+              <span v-else class="io-muted">默认</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="动作" width="80">
+            <template #default="{ row }">
+              <span :class="row.valid ? 'io-ok' : 'io-skip'">{{ row.action }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-alert
+          v-if="previewInvalid > 0"
+          class="mt12"
+          type="warning"
+          :closable="false"
+          :title="`其中 ${previewInvalid} 条会被跳过（未知场景 / 不可编辑 / 内容为空）`"
+        />
+        <div class="io-mode">
+          <span class="io-mode-label">导入方式</span>
+          <el-radio-group v-model="importMode">
+            <el-radio value="MERGE">覆盖同名</el-radio>
+            <el-radio value="SKIP_EXISTING">只填空缺</el-radio>
+            <el-radio value="REPLACE">清空后导入</el-radio>
+          </el-radio-group>
+        </div>
+        <el-alert
+          v-if="importMode === 'REPLACE'"
+          class="mt12"
+          type="error"
+          :closable="false"
+          show-icon
+          title="「清空后导入」会先删除当前账号的全部自定义模板，只剩这个包里的内容，请谨慎使用。"
+        />
+      </template>
+      <template #footer>
+        <template v-if="importResult">
+          <el-button type="primary" @click="closeImport">知道了</el-button>
+        </template>
+        <template v-else>
+          <el-button @click="closeImport">取消</el-button>
+          <el-button type="primary" :loading="importing" @click="doImport">确认导入</el-button>
+        </template>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, DocumentCopy, Lock, RefreshLeft, Search, View } from '@element-plus/icons-vue'
+import { Check, DocumentCopy, Download, Lock, RefreshLeft, Search, Upload, View } from '@element-plus/icons-vue'
 import {
   PROMPT_GROUP_ORDER,
+  exportPromptTemplates,
   getPromptTemplate,
+  importPromptTemplates,
   listPromptTemplates,
   previewPromptTemplate,
   resetPromptTemplate,
   savePromptTemplate,
+  type PromptExportPackageVO,
+  type PromptImportMode,
+  type PromptImportResultVO,
   type PromptPreviewVO,
   type PromptTemplateDetailVO,
   type PromptTemplateItemVO
@@ -380,6 +492,183 @@ async function copyFull() {
   }
 }
 
+/* ---------------- 导入 / 导出 ---------------- */
+
+const exporting = ref(false)
+const importing = ref(false)
+const exportVisible = ref(false)
+const exportOnlyOverridden = ref(true)
+const importVisible = ref(false)
+const importInputRef = ref<HTMLInputElement | null>(null)
+const previewPackage = ref<PromptExportPackageVO | null>(null)
+const importMode = ref<PromptImportMode>('MERGE')
+const importResult = ref<PromptImportResultVO | null>(null)
+
+/** 预览表：把包里的场景对照当前状态，标出能否导入与将要执行的动作 */
+const previewRows = computed(() => {
+  const pkg = previewPackage.value
+  if (!pkg) {
+    return []
+  }
+  return (pkg.scenes || []).map((item) => {
+    const known = items.value.find((row) => row.scene === item.scene)
+    const valid = Boolean(known && known.editable && String(item.content || '').trim())
+    let action: string
+    if (!valid) {
+      action = '跳过'
+    } else if (importMode.value === 'SKIP_EXISTING') {
+      action = known?.overridden ? '跳过' : '新建'
+    } else {
+      action = known?.overridden ? '覆盖' : '新建'
+    }
+    return {
+      scene: item.scene,
+      displayName: known?.displayName || item.displayName || item.scene,
+      overridden: Boolean(known?.overridden),
+      valid,
+      action
+    }
+  })
+})
+
+const previewInvalid = computed(() => previewRows.value.filter((row) => !row.valid).length)
+
+function modeLabel(mode: string) {
+  return mode === 'REPLACE' ? '清空后导入' : mode === 'SKIP_EXISTING' ? '只填空缺' : '覆盖同名'
+}
+
+/** blob 响应里的错误体是 JSON 文件流，需要自己读出来才能拿到后端提示 */
+async function readBlobError(error: unknown): Promise<string> {
+  const data = (error as { response?: { data?: unknown } })?.response?.data
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text()) as { message?: string }
+      if (parsed?.message) {
+        return parsed.message
+      }
+    } catch {
+      // 不是 JSON 就退回通用文案
+    }
+  }
+  return (error as Error)?.message || '导出失败'
+}
+
+async function doExport() {
+  exporting.value = true
+  try {
+    const blob = await exportPromptTemplates(exportOnlyOverridden.value)
+    const now = new Date()
+    const stamp = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+      '-',
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+      String(now.getSeconds()).padStart(2, '0')
+    ].join('')
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `storyforge-prompts-${stamp}.json`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    const count = exportOnlyOverridden.value
+      ? items.value.filter((item) => item.overridden).length
+      : items.value.filter((item) => item.editable).length
+    if (count === 0) {
+      ElMessage.info('当前没有自定义模板，已导出空包')
+    } else {
+      ElMessage.success(`已导出 ${count} 条模板`)
+    }
+    exportVisible.value = false
+  } catch (error) {
+    ElMessage.error(await readBlobError(error))
+  } finally {
+    exporting.value = false
+  }
+}
+
+function pickImportFile() {
+  importInputRef.value?.click()
+}
+
+async function onImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) {
+    return
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    ElMessage.error('文件超过 2MB，请确认选择的是提示词模板导出的 JSON')
+    return
+  }
+  try {
+    const pkg = JSON.parse(await file.text()) as PromptExportPackageVO
+    if (!pkg || !Array.isArray(pkg.scenes)) {
+      ElMessage.error('文件结构不对，缺少 scenes 数组')
+      return
+    }
+    if (pkg.format !== 'storyforge-prompt-export') {
+      ElMessage.error('这不是提示词模板包（format 不匹配）')
+      return
+    }
+    previewPackage.value = pkg
+    importResult.value = null
+    importMode.value = 'MERGE'
+    importVisible.value = true
+  } catch {
+    ElMessage.error('文件不是合法的 JSON')
+  }
+}
+
+async function doImport() {
+  const pkg = previewPackage.value
+  if (!pkg) {
+    return
+  }
+  if (importMode.value === 'REPLACE') {
+    try {
+      await ElMessageBox.confirm(
+        '「清空后导入」会先删除当前账号的全部自定义模板，再写入这个包的内容。确定继续吗？',
+        '清空后导入',
+        { type: 'warning', confirmButtonText: '确认清空并导入', cancelButtonText: '取消' }
+      )
+    } catch {
+      return
+    }
+  }
+  importing.value = true
+  try {
+    const result = await importPromptTemplates(pkg, importMode.value)
+    importResult.value = result
+    // 重新拉列表并选中第一个导入成功的场景
+    const firstImported = result.items.find((item) => item.status === 'IMPORTED')?.scene
+    await loadList()
+    if (firstImported) {
+      await selectScene(firstImported, true)
+    }
+    if (result.imported > 0) {
+      ElMessage.success(`已导入 ${result.imported} 条模板`)
+    } else {
+      ElMessage.warning('没有导入任何模板，请查看跳过原因')
+    }
+  } catch (error) {
+    ElMessage.error((error as Error).message || '导入失败')
+  } finally {
+    importing.value = false
+  }
+}
+
+function closeImport() {
+  importVisible.value = false
+  previewPackage.value = null
+  importResult.value = null
+}
+
 function formatTime(value?: string) {
   if (!value) {
     return ''
@@ -393,6 +682,90 @@ onMounted(loadList)
 <style scoped>
 .prompt-card :deep(.el-card__body) {
   padding: 0;
+}
+
+/* ---------- 顶部工具条 ---------- */
+.io-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--sf-border);
+}
+
+.io-toolbar-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--sf-text);
+}
+
+.io-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.io-hidden-input {
+  display: none;
+}
+
+/* ---------- 导入 / 导出弹窗 ---------- */
+.io-tip {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--sf-text-muted);
+}
+
+.io-sub {
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--sf-text-muted);
+}
+
+.io-list {
+  margin: 12px 0 0;
+  padding-left: 0;
+  list-style: none;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.io-list li {
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--sf-text);
+  border-bottom: 1px dashed var(--sf-border);
+}
+
+.io-ok {
+  color: var(--sf-success, #67c23a);
+  margin-right: 6px;
+}
+
+.io-skip {
+  color: var(--sf-warning, #e6a23c);
+  margin-right: 6px;
+}
+
+.io-msg {
+  color: var(--sf-text-muted);
+}
+
+.io-muted {
+  font-size: 12px;
+  color: var(--sf-text-muted);
+}
+
+.io-mode {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.io-mode-label {
+  font-size: 13px;
+  color: var(--sf-text-muted);
 }
 
 .prompt-layout {

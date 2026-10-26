@@ -7,6 +7,9 @@ import com.storyforge.common.exception.BizException;
 import com.storyforge.infra.ai.prompt.PromptSceneRegistry;
 import com.storyforge.infra.ai.prompt.PromptSceneSpec;
 import com.storyforge.infra.ai.prompt.PromptTemplateRenderer;
+import com.storyforge.modules.ai.dto.PromptExportItem;
+import com.storyforge.modules.ai.dto.PromptExportPackage;
+import com.storyforge.modules.ai.dto.PromptImportResult;
 import com.storyforge.modules.ai.dto.PromptTemplateVO;
 import com.storyforge.modules.ai.entity.PromptTemplateEntity;
 import com.storyforge.modules.ai.mapper.PromptTemplateMapper;
@@ -16,10 +19,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 提示词模板服务实现。
@@ -33,6 +39,11 @@ import java.util.Map;
 public class PromptTemplateServiceImpl implements PromptTemplateService {
 
     private static final int MAX_CONTENT = 8000;
+
+    /** 导入模式：覆盖同名 / 只填空缺 / 先清空再写 */
+    private static final String MODE_MERGE = "MERGE";
+    private static final String MODE_SKIP_EXISTING = "SKIP_EXISTING";
+    private static final String MODE_REPLACE = "REPLACE";
 
     private final PromptTemplateMapper templateMapper;
     private final PromptSceneRegistry registry;
@@ -132,6 +143,155 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                 renderer.renderContent(content, samples),
                 spec.outputContract(),
                 renderer.compose(spec, content, samples));
+    }
+
+    @Override
+    public PromptExportPackage exportPackage(boolean onlyOverridden) {
+        Map<String, PromptTemplateEntity> overrides = overrides();
+        PromptExportPackage pkg = new PromptExportPackage();
+        pkg.setExportedAt(LocalDateTime.now().withNano(0).toString());
+        pkg.setOnlyOverridden(onlyOverridden);
+        pkg.setNote("仅含可编辑的「指令段」；输出格式契约与变量清单由系统锁定，不随包迁移。");
+        List<PromptExportItem> items = new ArrayList<>();
+        for (PromptSceneSpec spec : registry.list()) {
+            if (!spec.editable()) {
+                continue;
+            }
+            PromptTemplateEntity entity = overrides.get(spec.scene());
+            if (onlyOverridden && entity == null) {
+                continue;
+            }
+            PromptExportItem item = new PromptExportItem();
+            item.setScene(spec.scene());
+            item.setDisplayName(spec.displayName());
+            item.setGroup(spec.group());
+            item.setContent(entity == null ? spec.defaultContent() : entity.getContent());
+            items.add(item);
+        }
+        pkg.setScenes(items);
+        pkg.setTotal(items.size());
+        return pkg;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PromptImportResult importPackage(PromptExportPackage pkg, String mode) {
+        if (pkg == null) {
+            throw BizException.of(ErrorCode.PROMPT_PACKAGE_INVALID, "文件内容为空或不是合法的 JSON");
+        }
+        if (!PromptExportPackage.FORMAT.equals(pkg.getFormat())) {
+            throw BizException.of(ErrorCode.PROMPT_PACKAGE_INVALID,
+                    "文件标识不是「" + PromptExportPackage.FORMAT + "」，请确认是提示词模板包");
+        }
+        if (pkg.getFormatVersion() == null || pkg.getFormatVersion() != PromptExportPackage.FORMAT_VERSION) {
+            throw BizException.of(ErrorCode.PROMPT_PACKAGE_INVALID,
+                    "包版本 " + pkg.getFormatVersion() + " 不被支持（当前支持 "
+                            + PromptExportPackage.FORMAT_VERSION + "）");
+        }
+
+        String normalizedMode = normalizeMode(mode);
+        PromptImportResult result = new PromptImportResult();
+        result.setMode(normalizedMode);
+        List<PromptExportItem> incoming = pkg.getScenes() == null ? List.of() : pkg.getScenes();
+        result.setTotal(incoming.size());
+
+        // REPLACE：先清空当前账号的全部覆盖（逐场景删，与 reset 同一条被隔离保护的路径）
+        if (MODE_REPLACE.equals(normalizedMode)) {
+            for (PromptSceneSpec spec : registry.list()) {
+                if (spec.editable()) {
+                    templateMapper.delete(Wrappers.<PromptTemplateEntity>lambdaQuery()
+                            .eq(PromptTemplateEntity::getScene, spec.scene()));
+                }
+            }
+        }
+
+        // 已有覆盖（用于 SKIP_EXISTING；REPLACE 刚清空因此为空）
+        Set<String> existing = new HashSet<>(overrides().keySet());
+        Set<String> seen = new HashSet<>();
+        for (PromptExportItem item : incoming) {
+            String scene = item.getScene() == null ? "" : item.getScene().trim();
+            if (scene.isEmpty()) {
+                addSkip(result, "", item.getDisplayName(), "缺少场景编码");
+                continue;
+            }
+            if (!seen.add(scene)) {
+                addSkip(result, scene, item.getDisplayName(), "包内重复场景，只保留第一条");
+                continue;
+            }
+            PromptSceneSpec spec = registry.get(scene);
+            if (spec == null) {
+                addSkip(result, scene, item.getDisplayName(), "未知场景");
+                continue;
+            }
+            if (!spec.editable()) {
+                addSkip(result, scene, spec.displayName(), "该场景不开放模板编辑");
+                continue;
+            }
+            String text = item.getContent() == null ? "" : item.getContent().trim();
+            if (text.isEmpty()) {
+                addSkip(result, scene, spec.displayName(), "模板内容为空");
+                continue;
+            }
+            if (text.length() > MAX_CONTENT) {
+                addSkip(result, scene, spec.displayName(),
+                        "内容超过 " + MAX_CONTENT + " 字符（当前 " + text.length() + "）");
+                continue;
+            }
+            List<String> unknown = renderer.unknownVariables(text, spec);
+            if (!unknown.isEmpty()) {
+                addSkip(result, scene, spec.displayName(),
+                        "含不认识的变量：" + String.join("、", unknown));
+                continue;
+            }
+            if (MODE_SKIP_EXISTING.equals(normalizedMode) && existing.contains(scene)) {
+                addSkip(result, scene, spec.displayName(), "已有自定义模板，跳过");
+                continue;
+            }
+            upsert(scene, text);
+            existing.add(scene);
+            result.setImported(result.getImported() + 1);
+            result.getItems().add(new PromptImportResult.ItemResult(
+                    scene, spec.displayName(), "IMPORTED", null));
+        }
+        result.setSkipped(result.getTotal() - result.getImported());
+        log.info("[prompt] import mode={} total={} imported={} skipped={}",
+                normalizedMode, result.getTotal(), result.getImported(), result.getSkipped());
+        return result;
+    }
+
+    /** 与 save 同源的写入：有覆盖就改（revision+1），没有就新建。 */
+    private void upsert(String scene, String text) {
+        PromptTemplateEntity entity = override(scene);
+        if (entity == null) {
+            entity = new PromptTemplateEntity();
+            entity.setUserId(UserContextHolder.requireUserId());
+            entity.setScene(scene);
+            entity.setContent(text);
+            entity.setRevision(1);
+            entity.setDeleted(0);
+            entity.setVersion(0);
+            templateMapper.insert(entity);
+        } else {
+            entity.setContent(text);
+            entity.setRevision((entity.getRevision() == null ? 0 : entity.getRevision()) + 1);
+            templateMapper.updateById(entity);
+        }
+    }
+
+    private String normalizeMode(String mode) {
+        if (mode == null || mode.isBlank()) {
+            return MODE_MERGE;
+        }
+        String upper = mode.trim().toUpperCase();
+        return switch (upper) {
+            case MODE_MERGE, MODE_SKIP_EXISTING, MODE_REPLACE -> upper;
+            default -> MODE_MERGE;
+        };
+    }
+
+    private void addSkip(PromptImportResult result, String scene, String displayName, String message) {
+        result.getItems().add(new PromptImportResult.ItemResult(
+                scene, displayName, "SKIPPED", message));
     }
 
     @Override

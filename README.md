@@ -116,6 +116,7 @@ app/                                      ★ 工程根目录（后端 + 前端 
 | 主题切换：浅色 / 深色 / 跟随系统三档，顶栏一键切换；语义 CSS 变量（`--sf-*`）驱动全站，Element Plus 暗色变量联动，首屏内联脚本防白闪，关系连线图双套配色 | ✅ 已完成 |
 | 人物属性与背包：角色弹窗新增「属性」「背包」两个页签。属性 = 当前值快照（数值/文本 + 单位，常用属性一键添加），背包三类条目（关联物品档案 / 货币如银两灵石 / 自由文本杂项，含数量、单位、状态：持有·遗失·已消耗）；正文与大纲生成会把角色当前属性、随身物品注入提示词，章节分析会把本章引起的属性与背包变化同时写履历并**更新当前值** | ✅ 已完成 |
 | 提示词模板管理（`/settings/prompts`）：按场景定制「指令段」（正文 / 大纲 / 总纲 / 蓝图四段 / 角色 / 物品 / 事件 / 章节分析 / 状态同步 / 一致性检查 / 按分析修改 / 封面 / 要素抽取，共 17 个场景开放），**输出格式由系统统一封装并锁定**，用户改不到 JSON 字段；支持变量芯片插入（`{{novelTitle}}` 等，白名单校验）、示例变量预览（不调 AI）、恢复默认。灵感对话、拆书改编、智能助手、势力生成、封面起名不在此维护，页面上直接不出现 | ✅ 已完成 |
+| **提示词模板导入导出**：工具栏「导出」下载 `storyforge-prompt-export` v1 的 JSON 包（默认只导改过的场景，可选全量），「导入」先预览后确认——逐行标出当前已改/默认、将要执行的动作、会被跳过的条数，导入方式三选一（覆盖同名 / 只填空缺 / 清空后导入），逐条回报成功或跳过原因；包格式与版本不符返回 `40072` | ✅ 已完成 |
 | 小说导入导出：卡片下拉「导出 JSON」导出整本（19 个分区 + 封面 Base64）；工具栏「导入」在当前账号下重建，旧 ID 全部重映射、重名自动加序号 | ✅ 已完成 |
 | **TXT 成品导出**：书架卡片下拉「导出 TXT」，范围可选全书 / 按卷 / 章节区间，输出 UTF-8 BOM 的排版纯文本（卷名行 + 章节标题 + 段落，末尾统计字数）；空章默认跳过，中文文件名走 `Content-Disposition` 的 `filename*` | ✅ 已完成 |
 | 章节正文**版本历史与回滚**：每次保存前存一份快照（手动 / AI 生成 / 按分析修改 / 批量连写 / 回滚 / 导入 / 自动），每章最多 20 条滚动清理；可预览任意历史版本并一键回滚（回滚本身也留一条快照，可再回滚回来）；已完成章节禁止外部改正文（回滚不受限） | ✅ 已完成 |
@@ -607,10 +608,12 @@ API Key 以 **AES-256-GCM** 加密入库（`v1:base64(iv|ct)`），主密钥来�
 | PUT | `/{scene}` | 保存指令段（≤8000 字，变量须在白名单内，否则 `40005`） |
 | DELETE | `/{scene}` | 恢复默认（逻辑删除覆盖行） |
 | POST | `/{scene}/preview` | 用示例变量渲染完整提示词，**不调用 AI** |
+| GET | `/export?onlyOverridden=` | 导出 JSON 包（`storyforge-prompt-export` v1，附件下载；默认只导改过的） |
+| POST | `/import?mode=` | 导入模板包，`mode` ∈ `MERGE`（覆盖同名，默认）/ `SKIP_EXISTING`（只填空缺）/ `REPLACE`（清空后导入）；包 `format`/`formatVersion` 不符返回 `40072`，逐条回报成功/跳过与原因 |
 
-开放编辑的场景（15 个）：`BODY_GEN`、`OUTLINE_GEN`、`MASTER_OUTLINE`、`BLUEPRINT_WORLDVIEW`、`BLUEPRINT_BACKGROUND`、
-`BLUEPRINT_CONFLICT`、`BLUEPRINT_CHARACTER`、`CHARACTER_BUILD`、`ITEM_BUILD`、`EVENT_SUPPLY`、
-`ANALYSIS_GEN`、`SYNC_EXTRACT`、`CHAPTER_REVISE`、`COVER_IMAGE`、`NOVEL_EXTRACT`；
+开放编辑的场景（17 个）：`BODY_GEN`、`OUTLINE_GEN`、`MASTER_OUTLINE`、`BLUEPRINT_WORLDVIEW`、`BLUEPRINT_BACKGROUND`、
+`BLUEPRINT_CONFLICT`、`BLUEPRINT_CHARACTER`、`BLUEPRINT_QUESTIONS`、`CHARACTER_BUILD`、`ITEM_BUILD`、`EVENT_SUPPLY`、
+`ANALYSIS_GEN`、`SYNC_EXTRACT`、`CONSISTENCY_CHECK`、`CHAPTER_REVISE`、`COVER_IMAGE`、`NOVEL_EXTRACT`；
 灵感对话（`INSPIRATION_CHAT`）、拆书改编（`DECONSTRUCT`）、小说智能助手（`NOVEL_AGENT`）、势力生成（`FACTION_BUILD`）、
 封面起名（`COVER_TITLE`）不出现在列表中，直接访问返回 `40049`。
 最终 system 提示 = 用户指令段 + 系统追加的输出格式契约，后者不入库、不可改。

@@ -1,4 +1,4 @@
-import { api } from './request'
+import { api, http } from './request'
 
 /** 可用变量：写模板时用 {{name}} 占位 */
 export interface PromptVariableVO {
@@ -58,6 +58,63 @@ export function resetPromptTemplate(scene: string) {
 
 export function previewPromptTemplate(scene: string) {
   return api.post<PromptPreviewVO>(`/prompt-templates/${scene}/preview`, {}, 60000)
+}
+
+/* ---------------- 导入 / 导出 ---------------- */
+
+/** 包内一条场景 */
+export interface PromptExportItemVO {
+  scene: string
+  displayName: string
+  group: string
+  content: string
+}
+
+/** 导出/导入的包结构（导入时原样回传） */
+export interface PromptExportPackageVO {
+  format: string
+  formatVersion: number
+  exportedAt?: string
+  site?: string
+  onlyOverridden?: boolean
+  note?: string
+  total?: number
+  scenes: PromptExportItemVO[]
+}
+
+/** 单条导入结果 */
+export interface PromptImportItemResult {
+  scene: string
+  displayName: string
+  status: 'IMPORTED' | 'SKIPPED'
+  message?: string
+}
+
+/** 导入结果 */
+export interface PromptImportResultVO {
+  mode: string
+  total: number
+  imported: number
+  skipped: number
+  items: PromptImportItemResult[]
+}
+
+/** 导入模式 */
+export type PromptImportMode = 'MERGE' | 'SKIP_EXISTING' | 'REPLACE'
+
+/** 导出提示词模板包（json 文件流） */
+export async function exportPromptTemplates(onlyOverridden = true): Promise<Blob> {
+  const response = await http.get<Blob>('/prompt-templates/export', {
+    params: { onlyOverridden },
+    responseType: 'blob'
+  })
+  return response.data
+}
+
+/** 导入提示词模板包 */
+export function importPromptTemplates(pkg: unknown, mode: PromptImportMode = 'MERGE') {
+  return api.post<PromptImportResultVO>(
+    `/prompt-templates/import?mode=${encodeURIComponent(mode)}`, pkg, 120000)
 }
 
 /** 分组排序：常用场景优先，其余按出现顺序兜底 */

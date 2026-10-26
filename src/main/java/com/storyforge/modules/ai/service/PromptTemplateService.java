@@ -1,5 +1,7 @@
 package com.storyforge.modules.ai.service;
 
+import com.storyforge.modules.ai.dto.PromptExportPackage;
+import com.storyforge.modules.ai.dto.PromptImportResult;
 import com.storyforge.modules.ai.dto.PromptTemplateVO;
 import com.storyforge.modules.ai.scene.AiScene;
 
@@ -20,6 +22,22 @@ public interface PromptTemplateService {
     void reset(String scene);
 
     PromptTemplateVO.Preview preview(String scene);
+
+    /**
+     * 导出提示词模板包。
+     *
+     * @param onlyOverridden 只导出「用户改过」的场景（推荐）；false 则把全部可编辑场景都导出
+     *                       （未改过的用系统默认内容填充）
+     */
+    PromptExportPackage exportPackage(boolean onlyOverridden);
+
+    /**
+     * 导入提示词模板包。
+     *
+     * @param mode {@code MERGE}（默认，覆盖同名） / {@code SKIP_EXISTING}（只填空缺） /
+     *             {@code REPLACE}（先清空当前账号全部自定义，再按包写入）
+     */
+    PromptImportResult importPackage(PromptExportPackage pkg, String mode);
 
     /**
      * 生成时取最终 system prompt：用户模板（渲染变量）+ 系统锁定的输出格式段。
