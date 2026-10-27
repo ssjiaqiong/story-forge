@@ -20,6 +20,7 @@ import com.storyforge.modules.search.mapper.SearchConfigMapper;
 import com.storyforge.modules.search.mapper.SearchSceneMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,12 +28,16 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 搜索源配置实现。
  *
  * <p>默认搜索源采用「免密钥优先」：首次进入时自动写入必应（默认）、DuckDuckGo、维基百科，
  * 用户可在设置页增删或改用 SearXNG / Tavily / Serper。</p>
+ *
+ * <p>初始化是惰性 + 幂等的：设置页首屏会同时请求搜索源列表与场景绑定，两个请求都会尝试初始化，
+ * 因此初始化过程按用户加锁，并以「(user_id, name) 唯一索引」兜底，任何一方重复写入都不会报错。</p>
  */
 @Slf4j
 @Service
@@ -42,6 +47,15 @@ public class SearchConfigServiceImpl implements SearchConfigService {
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final String DEFAULT_TEST_QUERY = "人工智能";
     private static final int DEFAULT_TOP_K = 6;
+
+    /** 首次初始化写入的免密钥搜索源：必应作为默认源，其余按顺序作为备选。 */
+    private static final List<DefaultSource> DEFAULT_SOURCES = List.of(
+            new DefaultSource("必应", SearchProvider.BING, "免密钥，国内网络通常可用"),
+            new DefaultSource("DuckDuckGo", SearchProvider.DUCKDUCKGO, "免密钥，部分网络环境无法访问"),
+            new DefaultSource("维基百科", SearchProvider.WIKIPEDIA, "免密钥，适合查百科类资料"));
+
+    /** 初始化默认源时的按用户锁：并发请求只有一个线程真正写入。 */
+    private final ConcurrentHashMap<Long, Object> seedLocks = new ConcurrentHashMap<>();
 
     private final SearchConfigMapper configMapper;
     private final SearchSceneMapper sceneMapper;
@@ -106,7 +120,13 @@ public class SearchConfigServiceImpl implements SearchConfigService {
         entity.setRemark(trimToNull(request.getRemark()));
         entity.setDeleted(0);
         entity.setVersion(0);
-        configMapper.insert(entity);
+        try {
+            configMapper.insert(entity);
+        } catch (DataIntegrityViolationException ex) {
+            // 预检与写入之间被并发请求插入（例如首屏初始化默认源的同一时刻保存表单）
+            throw BizException.of(ErrorCode.PARAM_INVALID,
+                    "同名搜索源已存在，可直接使用列表中的「" + name + "」");
+        }
         log.info("[search] config created userId={} name={} provider={} default={}",
                 userId, name, provider, isDefault);
         return toVO(entity, false);
@@ -284,34 +304,70 @@ public class SearchConfigServiceImpl implements SearchConfigService {
         }
     }
 
+    /**
+     * 幂等初始化默认搜索源。
+     *
+     * <p>注意：这里刻意不加 {@code @Transactional}。并发写入撞到唯一索引时，PostgreSQL 会让当前事务进入
+     * aborted 状态，同事务内的后续语句全部失败；交给每条语句自动提交，失败的那一条独立回滚即可。</p>
+     */
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public void ensureDefaults() {
         Long userId = UserContextHolder.requireUserId();
         if (configMapper.countAllByUser(userId) > 0) {
             ensureDefaultExists();
             return;
         }
-        insertDefault("必应", SearchProvider.BING, true, "免密钥，国内网络通常可用");
-        insertDefault("DuckDuckGo", SearchProvider.DUCKDUCKGO, false, "免密钥，部分网络环境无法访问");
-        insertDefault("维基百科", SearchProvider.WIKIPEDIA, false, "免密钥，适合查百科类资料");
-        log.info("[search] seeded default configs userId={}", userId);
+        Object lock = seedLocks.computeIfAbsent(userId, key -> new Object());
+        try {
+            synchronized (lock) {
+                if (configMapper.countAllByUser(userId) > 0) {
+                    ensureDefaultExists();
+                    return;
+                }
+                int inserted = seedDefaults(userId);
+                if (inserted > 0) {
+                    log.info("[search] seeded default configs userId={} count={}", userId, inserted);
+                }
+            }
+        } finally {
+            seedLocks.remove(userId, lock);
+        }
+        ensureDefaultExists();
     }
 
     /* ------------------------------------------------------------------ */
 
-    private void insertDefault(String name, SearchProvider provider, boolean isDefault, String remark) {
+    private int seedDefaults(Long userId) {
+        int inserted = 0;
+        for (DefaultSource source : DEFAULT_SOURCES) {
+            if (configMapper.countByUserName(userId, source.name()) > 0) {
+                // 已经是初始化过的账号（或另一实例已写入），跳过
+                continue;
+            }
+            try {
+                insertDefault(userId, source);
+                inserted++;
+            } catch (DataIntegrityViolationException ex) {
+                // 另一个请求（或另一个实例）刚刚写入同名默认源，唯一索引生效，忽略即可
+                log.debug("[search] default source already exists userId={} name={}", userId, source.name());
+            }
+        }
+        return inserted;
+    }
+
+    private void insertDefault(Long userId, DefaultSource source) {
         SearchConfigEntity entity = new SearchConfigEntity();
-        entity.setUserId(UserContextHolder.requireUserId());
-        entity.setName(name);
-        entity.setProvider(provider.name());
-        entity.setBaseUrl(provider.getDefaultBaseUrl());
+        entity.setUserId(userId);
+        entity.setName(source.name());
+        entity.setProvider(source.provider().name());
+        entity.setBaseUrl(source.provider().getDefaultBaseUrl());
         entity.setDefaultTopK(DEFAULT_TOP_K);
         entity.setLanguage("zh-CN");
         entity.setTimeoutMs(15000);
         entity.setEnabled(true);
-        entity.setIsDefault(isDefault);
-        entity.setRemark(remark);
+        // 默认身份统一在 ensureDefaultExists() 里授予，避免并发时撞 (user_id) WHERE is_default 唯一索引
+        entity.setIsDefault(false);
+        entity.setRemark(source.remark());
         entity.setDeleted(0);
         entity.setVersion(0);
         configMapper.insert(entity);
@@ -323,7 +379,7 @@ public class SearchConfigServiceImpl implements SearchConfigService {
                 .set(SearchConfigEntity::getIsDefault, false));
     }
 
-    /** 保证至少有一个启用中的默认源；没有任何可用源时保持无默认。 */
+    /** 保证至少有一个启用中的默认源（优先必应），没有任何可用源时保持无默认。 */
     private void ensureDefaultExists() {
         Long defaults = configMapper.selectCount(Wrappers.<SearchConfigEntity>lambdaQuery()
                 .eq(SearchConfigEntity::getIsDefault, true)
@@ -331,13 +387,24 @@ public class SearchConfigServiceImpl implements SearchConfigService {
         if (defaults != null && defaults > 0) {
             return;
         }
-        SearchConfigEntity candidate = configMapper.selectList(Wrappers.<SearchConfigEntity>lambdaQuery()
+        List<SearchConfigEntity> candidates = configMapper.selectList(
+                Wrappers.<SearchConfigEntity>lambdaQuery()
                         .eq(SearchConfigEntity::getEnabled, true)
-                        .orderByAsc(SearchConfigEntity::getCreatedAt))
-                .stream().findFirst().orElse(null);
-        if (candidate != null) {
-            candidate.setIsDefault(true);
-            configMapper.updateById(candidate);
+                        .orderByAsc(SearchConfigEntity::getCreatedAt));
+        SearchConfigEntity candidate = candidates.stream()
+                .filter(item -> SearchProvider.BING.name().equals(item.getProvider()))
+                .findFirst()
+                .orElse(candidates.isEmpty() ? null : candidates.get(0));
+        if (candidate == null || Boolean.TRUE.equals(candidate.getIsDefault())) {
+            return;
+        }
+        try {
+            configMapper.update(null, Wrappers.<SearchConfigEntity>lambdaUpdate()
+                    .eq(SearchConfigEntity::getId, candidate.getId())
+                    .set(SearchConfigEntity::getIsDefault, true));
+        } catch (DataIntegrityViolationException ex) {
+            // 并发下别的事务已设好默认源，忽略
+            log.debug("[search] default source already promoted userId={}", candidate.getUserId());
         }
     }
 
@@ -373,7 +440,8 @@ public class SearchConfigServiceImpl implements SearchConfigService {
                 .eq(SearchConfigEntity::getName, name)
                 .ne(excludeId != null, SearchConfigEntity::getId, excludeId));
         if (exists != null && exists > 0) {
-            throw BizException.of(ErrorCode.PARAM_INVALID, "同名搜索源已存在");
+            throw BizException.of(ErrorCode.PARAM_INVALID,
+                    "同名搜索源已存在，可直接使用列表中的「" + name + "」");
         }
     }
 
@@ -464,5 +532,9 @@ public class SearchConfigServiceImpl implements SearchConfigService {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    /** 默认搜索源定义 */
+    private record DefaultSource(String name, SearchProvider provider, String remark) {
     }
 }

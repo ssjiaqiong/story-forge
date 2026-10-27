@@ -361,11 +361,18 @@ function sceneHint(code: string) {
 async function loadAll() {
   loading.value = true
   try {
-    const [configList, sceneList] = await Promise.all([listSearchConfigs(), listSearchScenes()])
-    configs.value = configList || []
-    scenes.value = (sceneList || []).map((item) => ({ ...item, topK: item.topK ?? undefined }))
-  } catch (error) {
-    ElMessage.error((error as Error).message || '加载联网搜索配置失败')
+    // 两个接口各自独立：任何一个失败都不影响另一个结果的展示
+    const [configResult, sceneResult] = await Promise.allSettled([listSearchConfigs(), listSearchScenes()])
+    if (configResult.status === 'fulfilled') {
+      configs.value = configResult.value || []
+    } else {
+      ElMessage.error((configResult.reason as Error)?.message || '加载搜索源失败')
+    }
+    if (sceneResult.status === 'fulfilled') {
+      scenes.value = (sceneResult.value || []).map((item) => ({ ...item, topK: item.topK ?? undefined }))
+    } else {
+      ElMessage.error((sceneResult.reason as Error)?.message || '加载场景绑定失败')
+    }
   } finally {
     loading.value = false
   }
