@@ -159,6 +159,12 @@ public class MasterOutlineService {
         Long totalChapters = chapterMapper.selectCount(Wrappers.<ChapterEntity>lambdaQuery()
                 .eq(ChapterEntity::getNovelId, novelId));
         int chapterCount = totalChapters == null ? 0 : totalChapters.intValue();
+        // 「已写章节」只算有正文的章节：拆书生成的书章节已排满、正文为空，
+        // 不能当成「已写完」，否则总纲会跳到这些大纲之后另起炉灶。
+        Long writtenChapters = chapterMapper.selectCount(Wrappers.<ChapterEntity>lambdaQuery()
+                .eq(ChapterEntity::getNovelId, novelId)
+                .gt(ChapterEntity::getWordCount, 0));
+        int writtenCount = writtenChapters == null ? 0 : writtenChapters.intValue();
 
         int count = decideCount(detail, existing.size(), chapterCount,
                 request == null ? null : request.getCount());
@@ -180,7 +186,7 @@ public class MasterOutlineService {
         vars.put("novelTitle", novel == null || !hasText(novel.getTitle()) ? "这本书" : novel.getTitle());
         vars.put("genre", novel == null || !hasText(novel.getGenre()) ? "通用" : novel.getGenre());
         vars.put("count", String.valueOf(count));
-        vars.put("coverage", chapterCount > 0
+        vars.put("coverage", writtenCount > 0
                 ? "在此基础上继续往后规划，不要重复已写章节" : "全书主线");
         vars.put("authorRequirement", requirement);
         PromptVars.putNovel(vars, novel, MAX_TEXT_IN_PROMPT);
@@ -192,8 +198,8 @@ public class MasterOutlineService {
             system = "你是资深小说总策划，把整本书的剧情走向拆成若干条总纲：每条一段文字，只写剧情推进，不写人物档案。只输出 JSON。";
         }
 
-        String userPrompt = buildPrompt(detail, existing, events, chapterCount, count, requirement,
-                promptTemplateService.usedVariables(AiScene.MASTER_OUTLINE));
+        String userPrompt = buildPrompt(detail, existing, events, chapterCount, writtenCount, count,
+                requirement, promptTemplateService.usedVariables(AiScene.MASTER_OUTLINE));
         JsonNode root = parse(chat(endpoint, system, userPrompt).content());
 
         JsonNode list = root.path("outlines");
@@ -288,6 +294,7 @@ public class MasterOutlineService {
                                List<MasterOutlineEntity> existing,
                                List<TimelineVO> events,
                                int chapterCount,
+                               int writtenCount,
                                int count,
                                String requirement,
                                java.util.Set<String> used) {
@@ -359,8 +366,23 @@ public class MasterOutlineService {
                 builder.append("- ").append(item.getTitle()).append("\n");
             }
         }
-        if (chapterCount > 0) {
-            builder.append("\n【已写章节】共 ").append(chapterCount).append(" 章，新总纲要与其后剧情衔接。\n");
+        if (writtenCount > 0) {
+            builder.append("\n【已写章节】共 ").append(writtenCount).append(" 章，新总纲要与其后剧情衔接。\n");
+        } else if (chapterCount > 0) {
+            // 只有章节大纲、没有正文（例如拆书生成的新书）：这套大纲已经排满全书，
+            // 总纲要与它同源、覆盖全书走向，而不是接到它后面另起炉灶
+            builder.append("\n【已有章节大纲】共 ").append(chapterCount).append(" 章，已覆盖全书走向：\n");
+            Long outlineNovelId = novel == null ? null : novel.getId();
+            if (outlineNovelId != null) {
+                for (ChapterEntity chapter : outlineChapterTitles(outlineNovelId)) {
+                    if (!hasText(chapter.getTitle())) {
+                        continue;
+                    }
+                    builder.append("- 第").append(chapter.getChapterNo() == null ? "?" : chapter.getChapterNo())
+                            .append("章 ").append(truncate(chapter.getTitle(), 40)).append("\n");
+                }
+            }
+            builder.append("请把这套章节大纲归并成更有概括力的总纲，与上面的走向保持一致，不要重写或另起一条主线。\n");
         }
 
         PromptVars.appendConstraint(builder, detail, used, 1200);
@@ -382,6 +404,15 @@ public class MasterOutlineService {
                 .eq(MasterOutlineEntity::getNovelId, novelId)
                 .orderByAsc(MasterOutlineEntity::getSortNo)
                 .orderByAsc(MasterOutlineEntity::getId));
+    }
+
+    /** 只有章节大纲、没有正文时，取前 40 章标题帮模型对齐走向。 */
+    private List<ChapterEntity> outlineChapterTitles(Long novelId) {
+        return chapterMapper.selectList(Wrappers.<ChapterEntity>lambdaQuery()
+                .select(ChapterEntity::getChapterNo, ChapterEntity::getTitle)
+                .eq(ChapterEntity::getNovelId, novelId)
+                .orderByAsc(ChapterEntity::getChapterNo)
+                .last("limit 40"));
     }
 
     /** 统计每条总纲被多少条章节大纲引用。 */

@@ -17,7 +17,7 @@
               ? '上传一本完成的小说，AI 拆出主线脉络，脱敏改编成一部新书'
               : step === 'running'
                 ? '正在拆解与重建，篇幅越长耗时越久'
-                : '核对改编结果，确认无误后保存为新小说'
+                : '核对改编结果，确认无误后保存为新小说，保存时会一并生成总纲'
           }}
         </span>
       </div>
@@ -381,7 +381,10 @@
     <template #footer>
       <div class="dc-footer">
         <div class="dc-footer-left">
-          <span v-if="step === 'preview' && result?.model" class="dc-model">
+          <span v-if="saving && outlineGenerating" class="dc-model">
+            已保存，正在按设定与章节大纲生成总纲，约需 1 分钟…
+          </span>
+          <span v-else-if="step === 'preview' && result?.model" class="dc-model">
             由 {{ result.model }} 完成，耗时 {{ ((result.latencyMs || 0) / 1000).toFixed(0) }} 秒
           </span>
         </div>
@@ -392,8 +395,12 @@
           </el-button>
           <template v-else-if="step === 'preview'">
             <el-button :disabled="saving" @click="restart">重新拆解</el-button>
-            <el-button v-if="task?.generatedNovelId" type="primary" @click="openNovel">打开工作台</el-button>
-            <el-button v-else type="primary" :loading="saving" @click="onSave">保存到书架</el-button>
+            <el-button v-if="task?.generatedNovelId" type="primary" :disabled="saving" @click="openNovel">
+              打开工作台
+            </el-button>
+            <el-button v-else type="primary" :loading="saving" @click="onSave">
+              {{ saving ? (outlineGenerating ? '生成总纲中…' : '保存中…') : '保存到书架' }}
+            </el-button>
           </template>
         </div>
       </div>
@@ -415,6 +422,7 @@ import {
   type DeconstructSummaryVO,
   type DeconstructTaskVO
 } from '@/api/deconstruct'
+import { generateMasterOutlines } from '@/api/novel-asset'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{
@@ -491,6 +499,8 @@ const activeTab = ref('spine')
 const file = ref<File | null>(null)
 const starting = ref(false)
 const saving = ref(false)
+/** 保存成功后自动生成总纲的进行中状态（与 saving 分开，便于分别提示） */
+const outlineGenerating = ref(false)
 const error = ref('')
 const task = ref<DeconstructTaskVO | null>(null)
 const history = ref<DeconstructSummaryVO[]>([])
@@ -555,6 +565,7 @@ function reset() {
   elapsed.value = 0
   starting.value = false
   saving.value = false
+  outlineGenerating.value = false
   form.adaptationLevel = 'MEDIUM'
   form.backgroundDirection = ''
   form.chapterTarget = 16
@@ -690,12 +701,28 @@ async function onSave() {
     return
   }
   saving.value = true
+  const title = result.value?.title || '新书'
   try {
     const novelId = await saveDeconstruct(task.value.taskId)
     task.value.generatedNovelId = novelId
     emit('saved', novelId)
-    ElMessage.success(`已保存《${result.value?.title || '新书'}》，设定、人物、势力、事件与大纲均已写入`)
     void loadHistory()
+
+    // 保存成功后顺手把总纲也生成出来，做到拆书一次出全套；
+    // 这是独立的一次 AI 调用，失败不影响已经保存的书
+    outlineGenerating.value = true
+    try {
+      const outlines = await generateMasterOutlines(novelId, {})
+      ElMessage.success(
+        `已保存《${title}》，设定、人物、势力、事件、大纲与 ${outlines.length} 条总纲均已写入`
+      )
+    } catch (ex) {
+      ElMessage.warning(
+        `《${title}》已保存，但总纲没能自动生成（${(ex as Error).message || '未知原因'}），可进工作台点「AI 生成总纲」补上`
+      )
+    } finally {
+      outlineGenerating.value = false
+    }
   } catch (ex) {
     ElMessage.error((ex as Error).message || '保存失败')
   } finally {
