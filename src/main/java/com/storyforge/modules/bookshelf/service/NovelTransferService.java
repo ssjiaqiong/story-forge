@@ -298,6 +298,10 @@ public class NovelTransferService {
         novel.setCoverPath(null);
         novel.setChapterCount(0);
         novel.setWordCount(0);
+        // 老包可能没有这个字段：缺失时按「未设置」处理，避免插入 NOT NULL 列报错
+        if (novel.getPlannedWords() == null || novel.getPlannedWords() < 0) {
+            novel.setPlannedWords(0);
+        }
         novel.setDeleted(0);
         novel.setVersion(0);
         novel.setCreatedBy(userId);

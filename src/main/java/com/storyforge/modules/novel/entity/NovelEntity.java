@@ -61,6 +61,9 @@ public class NovelEntity implements Serializable {
     /** 创作约束：建书时 AI 追问后作者补充的信息，注入后续所有创作场景 */
     private String constraintText;
 
+    /** 预计完结字数；0 表示未设置（此时不可选「直到完结」的自动写书模式） */
+    private Integer plannedWords;
+
     @TableLogic
     private Integer deleted;
 

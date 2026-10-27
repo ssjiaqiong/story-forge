@@ -75,6 +75,18 @@
           <el-form-item label="简介">
             <el-input v-model="basic.intro" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" maxlength="4000" show-word-limit />
           </el-form-item>
+          <el-form-item label="预计完结字数">
+            <div class="planned-words-row">
+              <el-input-number
+                v-model="basic.plannedWords"
+                :min="0"
+                :max="100000000"
+                :step="10000"
+                controls-position="right"
+              />
+              <span class="planned-words-hint">单位：字。填 0 表示不设置；设置后「自动写书」才可选「直到完结」模式。</span>
+            </div>
+          </el-form-item>
         </el-form>
 
         <div class="section-title">
@@ -2598,7 +2610,8 @@ const basic = reactive({
   genre: '',
   tags: [] as string[],
   intro: '',
-  status: 'DRAFT'
+  status: 'DRAFT',
+  plannedWords: 0
 })
 const settings = reactive<Record<string, string>>({
   WORLDVIEW: '',
@@ -4522,6 +4535,7 @@ async function loadAll() {
     basic.tags = detail.novel.tags || []
     basic.intro = detail.novel.intro || ''
     basic.status = detail.novel.status || 'DRAFT'
+    basic.plannedWords = detail.novel.plannedWords || 0
     constraintText.value = detail.novel.constraintText || ''
     for (const key of Object.keys(settings)) {
       settings[key] = ''
@@ -4653,7 +4667,8 @@ async function saveBasic() {
       genre: basic.genre || undefined,
       tags: basic.tags,
       intro: basic.intro,
-      status: basic.status
+      status: basic.status,
+      plannedWords: basic.plannedWords || 0
     })
     novel.value = updated
     ElMessage.success('基本信息已保存')
@@ -5867,6 +5882,23 @@ function roleType(value?: string) {
 .basic-form :deep(.el-textarea__inner) {
   width: 100%;
   box-sizing: border-box;
+}
+
+.planned-words-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.planned-words-row :deep(.el-input-number) {
+  width: 200px;
+  flex: none;
+}
+
+.planned-words-hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 /* ---------- 总纲 ---------- */

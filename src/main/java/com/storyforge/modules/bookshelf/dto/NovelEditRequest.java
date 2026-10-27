@@ -39,6 +39,9 @@ public class NovelEditRequest {
     @Schema(description = "状态：DRAFT / WRITING / FINISHED / ARCHIVED")
     private String status;
 
+    @Schema(description = "预计完结字数；0 表示不设置（「直到完结」自动写书模式需要先设置）")
+    private Integer plannedWords;
+
     @Schema(description = "设定与角色，非空则整体覆盖")
     @Valid
     private NovelBlueprint blueprint;

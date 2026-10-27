@@ -315,7 +315,7 @@ public class BookshelfServiceImpl implements BookshelfService {
         String status = request.getStatus();
         if (hasText(status) && !"DRAFT".equalsIgnoreCase(status.trim())) {
             novel = novelService.update(novel.getId(),
-                    new NovelPatch(null, null, null, null, null, status.trim().toUpperCase()));
+                    new NovelPatch(null, null, null, null, null, status.trim().toUpperCase(), null));
         }
         if (blueprint != null) {
             saveProfile(novel.getId(), blueprint);
@@ -380,7 +380,8 @@ public class BookshelfServiceImpl implements BookshelfService {
                 request.getGenre(),
                 request.getTags(),
                 request.getIntro(),
-                request.getStatus()));
+                request.getStatus(),
+                request.getPlannedWords()));
         if (request.getBlueprint() != null) {
             saveProfile(id, request.getBlueprint());
             // 编辑时带上蓝图即整体覆盖：约束给了空串就是「清空」，不给 null 才是不改

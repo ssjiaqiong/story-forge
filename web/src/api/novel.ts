@@ -10,6 +10,10 @@ export interface NovelVO {
   intro?: string
   /** 创作约束：注入此后所有 AI 生成的硬要求 */
   constraintText?: string
+  /** 预计完结字数；0 / 空 表示未设置（此时不可选「直到完结」的自动写书模式） */
+  plannedWords?: number
+  /** 本书是否处于自动生成中（自动写书运行态）；为 true 时前端禁用全部编辑 */
+  autoWriting?: boolean
   status: string
   source: string
   inspirationSessionId?: string

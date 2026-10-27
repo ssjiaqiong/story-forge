@@ -95,6 +95,7 @@ public class NovelServiceImpl implements NovelService {
         entity.setInspirationSessionId(draft.inspirationSessionId());
         entity.setChapterCount(0);
         entity.setWordCount(0);
+        entity.setPlannedWords(0);
         entity.setDeleted(0);
         entity.setVersion(0);
         novelMapper.insert(entity);
@@ -176,6 +177,17 @@ public class NovelServiceImpl implements NovelService {
                 throw BizException.of(ErrorCode.PARAM_INVALID, "小说状态非法，可选 DRAFT / WRITING / FINISHED / ARCHIVED");
             }
             update.set(NovelEntity::getStatus, status);
+            changed = true;
+        }
+        if (patch.plannedWords() != null) {
+            int planned = patch.plannedWords();
+            if (planned < 0) {
+                throw BizException.of(ErrorCode.PARAM_INVALID, "预计完结字数不能为负数");
+            }
+            if (planned > 0 && planned < 10000) {
+                throw BizException.of(ErrorCode.PARAM_INVALID, "预计完结字数至少 1 万字；填 0 表示不设置");
+            }
+            update.set(NovelEntity::getPlannedWords, planned);
             changed = true;
         }
 
@@ -265,6 +277,8 @@ public class NovelServiceImpl implements NovelService {
         vo.setChapterCount(entity.getChapterCount());
         vo.setWordCount(entity.getWordCount());
         vo.setConstraintText(entity.getConstraintText());
+        vo.setPlannedWords(entity.getPlannedWords() == null ? 0 : entity.getPlannedWords());
+        vo.setAutoWriting(false);
         vo.setCreatedAt(entity.getCreatedAt());
         vo.setUpdatedAt(entity.getUpdatedAt());
         return vo;

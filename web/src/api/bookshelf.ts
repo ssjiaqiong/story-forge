@@ -101,6 +101,7 @@ export interface NovelEditRequest {
   tags?: string[]
   intro?: string
   status?: string
+  plannedWords?: number
   blueprint?: NovelBlueprint
 }
 

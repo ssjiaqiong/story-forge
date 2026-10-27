@@ -110,6 +110,11 @@ public enum ErrorCode {
     VOLUME_TARGET_INVALID(40070, "目标卷不存在或已被删除", 404),
     CHAPTER_CONFLICT(40071, "这一章已在别处被修改，请刷新后再试（可在弹窗里选择用你的内容覆盖）", 409),
     PROMPT_PACKAGE_INVALID(40072, "提示词模板包格式不正确，请确认是用本系统导出的 JSON", 400),
+    NOVEL_AUTO_WRITING(40073, "本书正在自动生成中，请先停止定时任务再编辑", 409),
+    AUTO_WRITE_TASK_NOT_FOUND(40074, "自动写书任务不存在", 404),
+    AUTO_WRITE_CRON_INVALID(40075, "cron 表达式不正确，请填写 6 段式（秒 分 时 日 月 周）", 400),
+    AUTO_WRITE_CONFIG_INVALID(40076, "自动写书配置不正确", 400),
+    AUTO_WRITE_RUNNING(40077, "本书的自动写书任务正在执行中，请稍候再试", 409),
 
     /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),

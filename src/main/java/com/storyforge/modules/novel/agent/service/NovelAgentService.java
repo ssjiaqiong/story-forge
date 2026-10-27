@@ -685,7 +685,8 @@ public class NovelAgentService {
                             textOf(fields, "genre"),
                             textList(fields, "tags"),
                             textOf(fields, "intro"),
-                            textOf(fields, "status"));
+                            textOf(fields, "status"),
+                            null);
                     novelService.update(novelId, patch);
                     result.setTarget("基本信息");
                 }

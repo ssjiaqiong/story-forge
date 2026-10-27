@@ -46,6 +46,12 @@ public class NovelVO {
     @Schema(description = "创作约束：建书时补充的读者画像、禁忌等，会注入所有 AI 创作场景")
     private String constraintText;
 
+    @Schema(description = "预计完结字数；0 表示未设置")
+    private Integer plannedWords;
+
+    @Schema(description = "本书是否处于自动生成中（自动写书任务运行态），前端据此禁用编辑")
+    private Boolean autoWriting;
+
     @Schema(description = "封面列表，主封面在前（书架按此顺序左右切换，最多 5 张）")
     private List<NovelCoverVO> covers = new ArrayList<>();
 

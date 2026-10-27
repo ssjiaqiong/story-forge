@@ -151,6 +151,8 @@ storyforge:
       - t_chapter_version
       - t_consistency_issue
       - t_volume
+      - t_auto_write_task
+      - t_auto_write_run
 
   # 敏感字段加密主密钥（AI API Key 等）。生产必须通过环境变量注入且不得随意更换，
   # 更换后已落库的密文将无法解密。

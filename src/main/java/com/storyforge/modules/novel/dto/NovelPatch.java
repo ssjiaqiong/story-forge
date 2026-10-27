@@ -13,5 +13,6 @@ public record NovelPatch(
         String genre,
         List<String> tags,
         String intro,
-        String status) {
+        String status,
+        Integer plannedWords) {
 }
