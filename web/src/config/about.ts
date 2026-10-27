@@ -15,6 +15,12 @@ export const SOURCE_REPO_URL = 'https://gitee.com/jiaqiong/story-forge'
 /** 协议全文 */
 export const LICENSE_URL = `${SOURCE_REPO_URL}/blob/master/LICENSE`
 
+/** ICP 备案号（展示文本） */
+export const ICP_NUMBER = '辽ICP备2026003747号-1'
+
+/** ICP 备案查询入口（工信部） */
+export const ICP_URL = 'https://beian.miit.gov.cn/'
+
 /** 外部链接统一走新窗口，noopener/noreferrer 防止被打开页面操纵本页 */
 export function openExternal(url: string): void {
   window.open(url, '_blank', 'noopener,noreferrer')

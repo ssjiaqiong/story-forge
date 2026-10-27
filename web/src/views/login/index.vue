@@ -55,6 +55,13 @@
         <a :href="SOURCE_REPO_URL" target="_blank" rel="noopener noreferrer">获取源码</a>
       </div>
     </div>
+
+    <div class="login-footer">
+      <a :href="ICP_URL" target="_blank" rel="noopener noreferrer">{{ ICP_NUMBER }}</a>
+      <span class="footer-sep">·</span>
+      <span>开源仓库</span>
+      <a :href="SOURCE_REPO_URL" target="_blank" rel="noopener noreferrer">{{ SOURCE_REPO_URL }}</a>
+    </div>
   </div>
 </template>
 
@@ -64,7 +71,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
-import { LICENSE_NAME, LICENSE_URL, SOURCE_REPO_URL } from '@/config/about'
+import { ICP_NUMBER, ICP_URL, LICENSE_NAME, LICENSE_URL, SOURCE_REPO_URL } from '@/config/about'
 
 const route = useRoute()
 const router = useRouter()
@@ -112,8 +119,10 @@ async function onSubmit() {
 .login-page {
   height: 100vh;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 24px;
   background: linear-gradient(135deg, #1f2733 0%, #2d3f5e 55%, #3b6ef6 100%);
 }
 
@@ -179,5 +188,32 @@ async function onSubmit() {
 
 .login-license a:hover {
   text-decoration: underline;
+}
+
+.login-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.8;
+  color: rgba(255, 255, 255, 0.72);
+  word-break: break-all;
+}
+
+.login-footer a {
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration: none;
+}
+
+.login-footer a:hover {
+  text-decoration: underline;
+}
+
+.footer-sep {
+  margin: 0 2px;
+  opacity: 0.6;
 }
 </style>

@@ -73,6 +73,13 @@
       <el-main class="layout-main">
         <router-view />
       </el-main>
+
+      <el-footer class="layout-footer" height="auto">
+        <a :href="ICP_URL" target="_blank" rel="noopener noreferrer">{{ ICP_NUMBER }}</a>
+        <span class="footer-sep">·</span>
+        <span>开源仓库</span>
+        <a :href="SOURCE_REPO_URL" target="_blank" rel="noopener noreferrer">{{ SOURCE_REPO_URL }}</a>
+      </el-footer>
     </el-container>
   </el-container>
 </template>
@@ -84,7 +91,7 @@ import { ElMessageBox } from 'element-plus'
 import { ArrowDown, Collection, Connection, EditPen, Expand, Fold, MagicStick, Moon, Notebook, Odometer, Reading, Search, Sunny, User, UserFilled } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
-import { LICENSE_URL, openExternal, SOURCE_REPO_URL } from '@/config/about'
+import { ICP_NUMBER, ICP_URL, LICENSE_URL, openExternal, SOURCE_REPO_URL } from '@/config/about'
 
 interface MenuItem {
   path: string
@@ -317,6 +324,33 @@ async function onCommand(command: string) {
   background: var(--sf-bg-page);
   padding: 16px;
   overflow-y: auto;
+}
+
+.layout-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--sf-text-muted);
+  background: var(--sf-bg-page);
+  border-top: 1px solid var(--sf-border);
+}
+
+.layout-footer a {
+  color: var(--sf-text-muted);
+  text-decoration: none;
+}
+
+.layout-footer a:hover {
+  color: var(--sf-brand);
+  text-decoration: underline;
+}
+
+.footer-sep {
+  margin: 0 4px;
 }
 
 .is-active-theme {
