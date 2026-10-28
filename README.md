@@ -36,6 +36,7 @@ app/                                      ★ 工程根目录（后端 + 前端 
 ├── README.md                             本文件
 ├── LICENSE                               GNU AGPL-3.0 协议全文（本项目采用）
 ├── pom.xml                               Maven 构建入口（单模块）
+├── docker-compose.yaml                   一键运行发布镜像（app + postgres，数据落 ./data）
 ├── docs/                                 需求 / 详细设计 / 数据库与部署运维
 ├── script/
 │   ├── build.bat|ps1|sh                  编译：前端构建 + 静态合并 + 后端打包（--image 顺便推镜像）
@@ -241,6 +242,40 @@ SPRING_PROFILES_ACTIVE=sqlite SQLITE_PATH=./data/storyforge.db java -jar target/
 
 ### 4.3 容器部署（单镜像）
 
+应用（前端 + 后端）与 PostgreSQL 在同一个编排里，**只需要 Docker + Compose**，不需要 JDK / Node / Maven。
+两种走法：直接跑已发布的镜像，或从源码构建。
+
+### 4.3.1 直接跑发布镜像（推荐，零构建）
+
+仓库根目录的 `docker-compose.yaml` 用的是腾讯云 TCR 上的发布镜像，一条命令起全套：
+
+```bash
+# 工作目录 app/
+docker compose up -d
+docker compose logs -f app        # 首次启动：Flyway 建表 + 创建初始超管
+# 访问 http://localhost:8080 （admin / Admin@123456 → 首登强制改密）
+```
+
+- 镜像 `ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.1`，换版本：
+  `IMAGE_TAG=v1.2.1 docker compose up -d`，或直接改 compose 里的 `image`
+- 数据全部落在**同级** `data/`：`pg/`（数据库）、`files/`（业务文件）、`covers/`（封面）、`logs/`（日志），
+  整个目录拷走即完成备份 / 迁移（已在 `.gitignore` 中）
+- 自定义配置：在同级建 `.env`（同样已 gitignore），compose 会自动读取并做变量替换
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `IMAGE_TAG` | `v1.2.1` | 镜像标签 |
+| `APP_PORT` | `8080` | 对外端口 |
+| `DB_NAME` / `DB_USER` / `DB_PASSWORD` | `storyforge` / `storyforge` / `storyforge` | 数据库（容器内自动创建） |
+| `STORYFORGE_JWT_SECRET` | 内置占位值 | JWT 签名密钥，**≥ 32 字节** |
+| `STORYFORGE_SECRET_KEY` | 内置占位值 | AI Key 加密主密钥，**首次启动后不可更换**（换了已存密钥解不开） |
+| `STORYFORGE_ADMIN_USERNAME` / `_PASSWORD` | `admin` / `Admin@123456` | 初始超管，仅首次启动创建 |
+| `JAVA_OPTS` | `-Xms128m -Xmx640m` | 容器内 JVM 堆 |
+
+> 内置默认密钥**仅供本机试跑**。对外提供服务前务必在 `.env` 里换成随机值。
+
+### 4.3.2 源码构建（改了代码要自测时）
+
 ```bash
 cd docker
 cp .env.example .env
@@ -251,7 +286,7 @@ docker compose up -d --build
 
 数据落在 `docker/data/`：`files/`（业务文件）、`pg/`（数据库）、`logs/`（应用日志）。
 
-### 4.3.1 Windows 桌面版（EXE 安装包 / 绿色版）
+### 4.3.3 Windows 桌面版（EXE 安装包 / 绿色版）
 
 桌面版把整套应用（含 JDK17 运行时）打成**免 Java、免数据库**的可执行产物，
 数据库就是一个 SQLite 文件，适合本机单人创作。两种形态：
@@ -313,7 +348,7 @@ dist\StoryForge\
 > 桌面模式判定：被打包（存在 `jpackage.app-path`）或 profile 含 `sqlite` 时，启动引导
 > （`com.storyforge.desktop` 包）才会接管端口/锁/开浏览器；PG/MySQL 服务器模式完全不受影响。
 
-### 4.3.2 远程服务器部署（SSH → Docker Compose）
+### 4.3.4 远程服务器部署（SSH → Docker Compose）
 
 `script/deploy/` 提供一键部署到远程 Linux 服务器的能力（应用 + PostgreSQL 双容器，
 数据落远端 `/opt/storyforge/data/`）。**部署不编译代码**：应用镜像直接取自腾讯云 TCR
@@ -356,7 +391,7 @@ dist\StoryForge\
 - 同款能力已封装为 WorkBuddy 技能 `.workbuddy/skills/storyforge-deploy/`，
   对话说「部署到服务器 / 看服务器日志」即可触发。
 
-### 4.3.3 镜像构建与推送（腾讯云 TCR）
+### 4.3.5 镜像构建与推送（腾讯云 TCR）
 
 `script/deploy/build.sh` 把工程打成容器镜像并推送到 TCR 个人版
 （当前地址 `ccr.ccs.tencentyun.com/jiaqiong/story-forge`，命名空间/仓库在 TCR 控制台创建）。
