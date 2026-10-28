@@ -247,6 +247,7 @@ public class ChapterVersionServiceImpl implements ChapterVersionService {
             case ChapterVersionEntity.SOURCE_RESTORE -> "回滚前自动留档";
             case ChapterVersionEntity.SOURCE_IMPORT -> "导入覆盖 · 留档";
             case ChapterVersionEntity.SOURCE_AUTO -> "自动保存 · 覆盖前留档";
+            case ChapterVersionEntity.SOURCE_AUTO_WRITE -> "自动写书 · 覆盖前留档";
             default -> "手动保存 · 覆盖前留档";
         };
     }
@@ -263,6 +264,7 @@ public class ChapterVersionServiceImpl implements ChapterVersionService {
             case ChapterVersionEntity.SOURCE_RESTORE -> "回滚";
             case ChapterVersionEntity.SOURCE_IMPORT -> "导入";
             case ChapterVersionEntity.SOURCE_AUTO -> "自动保存";
+            case ChapterVersionEntity.SOURCE_AUTO_WRITE -> "自动写书";
             default -> "手动保存";
         };
     }

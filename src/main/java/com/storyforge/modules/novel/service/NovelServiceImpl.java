@@ -8,6 +8,7 @@ import com.storyforge.common.api.ErrorCode;
 import com.storyforge.common.api.PageResult;
 import com.storyforge.common.context.UserContextHolder;
 import com.storyforge.common.exception.BizException;
+import com.storyforge.modules.autowrite.support.AutoWriteGuard;
 import com.storyforge.modules.novel.dto.NovelDraft;
 import com.storyforge.modules.novel.dto.NovelPatch;
 import com.storyforge.modules.novel.dto.NovelQuery;
@@ -43,6 +44,7 @@ public class NovelServiceImpl implements NovelService {
     private final NovelMapper novelMapper;
     private final NovelCoverMapper coverMapper;
     private final ObjectMapper objectMapper;
+    private final AutoWriteGuard autoWriteGuard;
 
     @Override
     public PageResult<NovelVO> page(NovelQuery query) {
@@ -73,6 +75,7 @@ public class NovelServiceImpl implements NovelService {
             throw BizException.of(ErrorCode.NOVEL_NOT_FOUND);
         }
         NovelVO vo = toVO(entity);
+        vo.setAutoWriting(autoWriteGuard.isLocked(id));
         vo.setCovers(selectCovers(List.of(id)).getOrDefault(id, List.of()));
         return vo;
     }
@@ -125,6 +128,7 @@ public class NovelServiceImpl implements NovelService {
         if (existing == null) {
             throw BizException.of(ErrorCode.NOVEL_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(id);
         if (patch == null) {
             return toVO(existing);
         }
@@ -206,6 +210,7 @@ public class NovelServiceImpl implements NovelService {
         if (existing == null) {
             throw BizException.of(ErrorCode.NOVEL_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(id);
         novelMapper.deleteById(id);
         log.info("[novel] deleted id={} userId={}", id, existing.getUserId());
     }

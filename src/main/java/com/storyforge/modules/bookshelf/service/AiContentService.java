@@ -120,6 +120,7 @@ public class AiContentService {
     private final WebSearchOrchestrator webSearchOrchestrator;
     private final NovelArchiveBootstrapService archiveBootstrapService;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
 
     /**
      * 流式回调：检索完成时给一次元信息，之后每个增量给一次文本。
@@ -208,6 +209,7 @@ public class AiContentService {
      */
     private GenContext prepare(Long chapterId, ContentGenerateRequest request, StreamListener listener) {
         ChapterVO chapter = assetService.getChapter(chapterId);
+        autoWriteGuard.assertEditable(chapter.novelId());
         NovelDetailVO detail = bookshelfService.detail(chapter.novelId());
         List<ChapterVO> chapters = assetService.listChapters(chapter.novelId());
         List<TimelineVO> events = assetService.listTimeline(chapter.novelId());

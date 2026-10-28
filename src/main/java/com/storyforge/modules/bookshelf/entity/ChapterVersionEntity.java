@@ -30,6 +30,8 @@ public class ChapterVersionEntity implements Serializable {
     public static final String SOURCE_RESTORE = "RESTORE";
     public static final String SOURCE_IMPORT = "IMPORT";
     public static final String SOURCE_AUTO = "AUTO";
+    /** 自动写书流水线写回正文 */
+    public static final String SOURCE_AUTO_WRITE = "AUTO_WRITE";
 
     @TableId(type = IdType.ASSIGN_ID)
     private Long id;

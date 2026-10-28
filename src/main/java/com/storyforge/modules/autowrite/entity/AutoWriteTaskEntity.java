@@ -108,23 +108,33 @@ public class AutoWriteTaskEntity implements Serializable {
     @Version
     private Integer version;
 
-    public boolean isEnabled() {
+    // 注意：以下辅助方法一律不使用 isXxx() 命名。
+    // Lombok 会为 Integer 字段生成 getEnabled()/getClosingTriggered()/getConsistencyAi()，
+    // 若再出现 isEnabled()/isClosingTriggered()/isConsistencyAi()，属性名相同而返回类型不同，
+    // 会被 JavaBeans / MyBatis 反射判定为「重载 getter 类型歧义」而抛 ReflectionException。
+
+    /** 定时开关是否打开（enabled == 1） */
+    public boolean enabledOn() {
         return enabled != null && enabled == 1;
     }
 
-    public boolean isRunning() {
+    /** 运行态是否正在执行 */
+    public boolean runningNow() {
         return STATUS_RUNNING.equals(status);
     }
 
-    public boolean isUntilEnd() {
+    /** 是否「直到完结」口径 */
+    public boolean untilEndMode() {
         return END_MODE_UNTIL_END.equals(endMode);
     }
 
-    public boolean isClosingTriggered() {
+    /** 收尾评估是否已触发（只触发一次） */
+    public boolean closingTriggeredOn() {
         return closingTriggered != null && closingTriggered == 1;
     }
 
-    public boolean isConsistencyAi() {
+    /** 体检是否跑 AI 深检（null 视为开启） */
+    public boolean consistencyAiOn() {
         return consistencyAi == null || consistencyAi == 1;
     }
 }

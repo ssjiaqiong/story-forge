@@ -69,6 +69,7 @@ public class MasterOutlineService {
     private final AiUsageService aiUsageService;
     private final PromptTemplateService promptTemplateService;
     private final ObjectMapper objectMapper;
+    private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
 
     /* ------------------------------------------------------------------ */
     /* 查询与维护                                                          */
@@ -86,6 +87,7 @@ public class MasterOutlineService {
         if (request == null || !hasText(request.getTitle())) {
             throw BizException.of(ErrorCode.PARAM_INVALID, "请填写总纲标题");
         }
+        autoWriteGuard.assertEditable(novelId);
         MasterOutlineEntity entity = new MasterOutlineEntity();
         entity.setUserId(UserContextHolder.requireUserId());
         entity.setNovelId(novelId);
@@ -101,6 +103,7 @@ public class MasterOutlineService {
     @Transactional(rollbackFor = Exception.class)
     public MasterOutlineVO update(Long id, MasterOutlineRequest request) {
         MasterOutlineEntity entity = require(id);
+        autoWriteGuard.assertEditable(entity.getNovelId());
         if (request == null) {
             throw BizException.of(ErrorCode.PARAM_INVALID, "请求内容不能为空");
         }
@@ -125,6 +128,7 @@ public class MasterOutlineService {
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
         MasterOutlineEntity entity = require(id);
+        autoWriteGuard.assertEditable(entity.getNovelId());
         chapterMapper.update(null, Wrappers.<ChapterEntity>lambdaUpdate()
                 .set(ChapterEntity::getMasterOutlineId, null)
                 .eq(ChapterEntity::getMasterOutlineId, id));
@@ -152,6 +156,7 @@ public class MasterOutlineService {
      */
     @Transactional(rollbackFor = Exception.class)
     public List<MasterOutlineVO> generate(Long novelId, MasterOutlineGenerateRequest request) {
+        autoWriteGuard.assertEditable(novelId);
         NovelDetailVO detail = bookshelfService.detail(novelId);
         List<MasterOutlineEntity> existing = entities(novelId);
         List<TimelineVO> events = assetService.listTimeline(novelId);

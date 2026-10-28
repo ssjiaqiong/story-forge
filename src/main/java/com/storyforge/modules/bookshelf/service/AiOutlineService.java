@@ -93,9 +93,11 @@ public class AiOutlineService {
     private final MasterOutlineService masterOutlineService;
     private final FactionService factionService;
     private final NovelArchiveBootstrapService archiveBootstrapService;
+    private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
 
     @Transactional(rollbackFor = Exception.class)
     public OutlineGenerateResultVO generate(Long novelId, OutlineGenerateRequest request) {
+        autoWriteGuard.assertEditable(novelId);
         NovelDetailVO detail = bookshelfService.detail(novelId);
         List<ChapterVO> existing = assetService.listChapters(novelId);
         // 「未使用」事件排在最前面：模型从上往下读，先看到可用的，认领率更高

@@ -41,6 +41,7 @@ public class VolumeService {
     private final VolumeMapper volumeMapper;
     private final ChapterMapper chapterMapper;
     private final NovelMapper novelMapper;
+    private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
 
     /* ------------------------------------------------------------------ */
     /* 查询                                                               */
@@ -85,6 +86,7 @@ public class VolumeService {
     @Transactional(rollbackFor = Exception.class)
     public VolumeVO create(Long novelId, VolumeCreateRequest request) {
         requireNovel(novelId);
+        autoWriteGuard.assertEditable(novelId);
         List<VolumeEntity> existing = volumesOf(novelId);
         int nextNo = existing.stream()
                 .mapToInt(item -> item.getVolumeNo() == null ? 0 : item.getVolumeNo())
@@ -113,6 +115,7 @@ public class VolumeService {
     @Transactional(rollbackFor = Exception.class)
     public VolumeVO update(Long volumeId, VolumeUpdateRequest request) {
         VolumeEntity volume = requireVolume(volumeId);
+        autoWriteGuard.assertEditable(volume.getNovelId());
         if (request == null) {
             return one(volume.getNovelId(), volume);
         }
@@ -142,6 +145,7 @@ public class VolumeService {
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long volumeId, Integer moveToVolumeNo) {
         VolumeEntity volume = requireVolume(volumeId);
+        autoWriteGuard.assertEditable(volume.getNovelId());
         Long novelId = volume.getNovelId();
         List<ChapterEntity> chapters = chaptersOf(novelId).stream()
                 .filter(item -> volume.getVolumeNo().equals(
@@ -177,6 +181,7 @@ public class VolumeService {
     @Transactional(rollbackFor = Exception.class)
     public List<VolumeVO> move(Long volumeId, String direction) {
         VolumeEntity volume = requireVolume(volumeId);
+        autoWriteGuard.assertEditable(volume.getNovelId());
         Long novelId = volume.getNovelId();
         List<VolumeEntity> volumes = volumesOf(novelId);
         boolean up = "UP".equalsIgnoreCase(direction);

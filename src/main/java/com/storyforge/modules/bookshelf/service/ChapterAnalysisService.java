@@ -121,6 +121,7 @@ public class ChapterAnalysisService {
     private final ChapterAnalysisApplier applier;
     private final CharacterAssetService characterAssetService;
     private final ObjectMapper objectMapper;
+    private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
 
     private final ExecutorService executor = Executors.newFixedThreadPool(2, runnable -> {
         Thread thread = new Thread(runnable, "chapter-analysis-" + COUNTER.incrementAndGet());
@@ -146,6 +147,7 @@ public class ChapterAnalysisService {
         if (chapter == null) {
             throw BizException.of(ErrorCode.CHAPTER_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(chapter.getNovelId());
         if (chapter.getContent() == null || chapter.getContent().isBlank()) {
             throw BizException.of(ErrorCode.CHAPTER_CONTENT_EMPTY);
         }

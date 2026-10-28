@@ -175,6 +175,7 @@ public class BookshelfServiceImpl implements BookshelfService {
     private final AiSceneEndpointResolver endpointResolver;
     private final ObjectMapper objectMapper;
     private final AiUsageService aiUsageService;
+    private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
 
     /* ------------------------------------------------------------------ */
     /* 1. 生成蓝图                                                        */
@@ -374,6 +375,7 @@ public class BookshelfServiceImpl implements BookshelfService {
         if (request == null) {
             throw BizException.of(ErrorCode.PARAM_INVALID, "请求内容不能为空");
         }
+        autoWriteGuard.assertEditable(id);
         NovelVO novel = novelService.update(id, new NovelPatch(
                 request.getTitle(),
                 request.getPenName(),
@@ -400,6 +402,7 @@ public class BookshelfServiceImpl implements BookshelfService {
     public void delete(Long id) {
         // 先删从属数据（设定 / 角色 / 章节 / 时间线 / 物品），再删小说；任一步失败整体回滚
         novelService.detail(id);
+        autoWriteGuard.assertEditable(id);
         settingDocMapper.delete(Wrappers.<SettingDocEntity>lambdaQuery()
                 .eq(SettingDocEntity::getNovelId, id));
         characterRelationMapper.delete(Wrappers.<CharacterRelationEntity>lambdaQuery()

@@ -128,6 +128,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     private final ChapterVersionService chapterVersionService;
     private final VolumeService volumeService;
     private final ObjectMapper objectMapper;
+    private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
 
     /* ------------------------------------------------------------------ */
     /* 章节                                                               */
@@ -161,6 +162,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Transactional(rollbackFor = Exception.class)
     public ChapterVO createChapter(Long novelId, ChapterRequest request) {
         requireNovel(novelId);
+        autoWriteGuard.assertEditable(novelId);
         if (request == null) {
             throw BizException.of(ErrorCode.PARAM_INVALID, "请求内容不能为空");
         }
@@ -211,6 +213,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Transactional(rollbackFor = Exception.class)
     public ChapterVO saveContent(Long chapterId, String content, Integer version) {
         ChapterEntity entity = requireChapter(chapterId);
+        autoWriteGuard.assertEditable(entity.getNovelId());
         // 已定稿的章节正文锁定：自动保存不享有例外，前端本该不给编辑入口，这里再兜一次
         if (CHAPTER_STATUS_DONE.equals(entity.getStatus())) {
             throw BizException.of(ErrorCode.CHAPTER_LOCKED);
@@ -304,6 +307,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     private ChapterVO updateChapter(Long chapterId, ChapterRequest request, String source,
                                     boolean allowLocked, String snapshotNote) {
         ChapterEntity entity = requireChapter(chapterId);
+        autoWriteGuard.assertEditable(entity.getNovelId());
         if (request == null) {
             throw BizException.of(ErrorCode.PARAM_INVALID, "请求内容不能为空");
         }
@@ -408,6 +412,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Transactional(rollbackFor = Exception.class)
     public void deleteChapter(Long chapterId) {
         ChapterEntity entity = requireChapter(chapterId);
+        autoWriteGuard.assertEditable(entity.getNovelId());
         deleteChapterLinks(chapterId);
         // 分析报告与变更履历都挂在章节上，章节删除后一并清理，避免出现指向空章的记录
         chapterAnalysisMapper.delete(Wrappers.<com.storyforge.modules.bookshelf.entity.ChapterAnalysisEntity>lambdaQuery()
@@ -442,6 +447,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Transactional(rollbackFor = Exception.class)
     public TimelineVO createTimeline(Long novelId, TimelineRequest request) {
         requireNovel(novelId);
+        autoWriteGuard.assertEditable(novelId);
         TimelineEventEntity entity = new TimelineEventEntity();
         entity.setUserId(UserContextHolder.requireUserId());
         entity.setNovelId(novelId);
@@ -464,6 +470,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
         if (entity == null) {
             throw BizException.of(ErrorCode.TIMELINE_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(entity.getNovelId());
         if (request == null) {
             throw BizException.of(ErrorCode.PARAM_INVALID, "请求内容不能为空");
         }
@@ -492,9 +499,11 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteTimeline(Long eventId) {
-        if (timelineEventMapper.selectById(eventId) == null) {
+        TimelineEventEntity timeline = timelineEventMapper.selectById(eventId);
+        if (timeline == null) {
             throw BizException.of(ErrorCode.TIMELINE_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(timeline.getNovelId());
         eventParticipantMapper.delete(Wrappers.<EventParticipantEntity>lambdaQuery()
                 .eq(EventParticipantEntity::getEventId, eventId));
         chapterEventMapper.delete(Wrappers.<ChapterEventEntity>lambdaQuery()
@@ -522,6 +531,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Transactional(rollbackFor = Exception.class)
     public ItemVO createItem(Long novelId, ItemRequest request) {
         requireNovel(novelId);
+        autoWriteGuard.assertEditable(novelId);
         ItemEntity entity = new ItemEntity();
         entity.setUserId(UserContextHolder.requireUserId());
         entity.setNovelId(novelId);
@@ -546,6 +556,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
         if (entity == null) {
             throw BizException.of(ErrorCode.ITEM_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(entity.getNovelId());
         if (request == null) {
             throw BizException.of(ErrorCode.PARAM_INVALID, "请求内容不能为空");
         }
@@ -587,9 +598,11 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteItem(Long itemId) {
-        if (itemMapper.selectById(itemId) == null) {
+        ItemEntity item = itemMapper.selectById(itemId);
+        if (item == null) {
             throw BizException.of(ErrorCode.ITEM_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(item.getNovelId());
         changeHistoryMapper.delete(Wrappers.<com.storyforge.modules.bookshelf.entity.ChangeHistoryEntity>lambdaQuery()
                 .eq(com.storyforge.modules.bookshelf.entity.ChangeHistoryEntity::getEntityType, "ITEM")
                 .eq(com.storyforge.modules.bookshelf.entity.ChangeHistoryEntity::getEntityId, itemId));
@@ -619,6 +632,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Transactional(rollbackFor = Exception.class)
     public CharacterVO createCharacter(Long novelId, CharacterSaveRequest request) {
         requireNovel(novelId);
+        autoWriteGuard.assertEditable(novelId);
         CharacterEntity entity = new CharacterEntity();
         entity.setUserId(UserContextHolder.requireUserId());
         entity.setNovelId(novelId);
@@ -644,6 +658,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
         if (entity == null) {
             throw BizException.of(ErrorCode.CHARACTER_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(entity.getNovelId());
         applyCharacter(entity, request);
         characterMapper.updateById(entity);
         return toCharacterVO(entity);
@@ -652,9 +667,11 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteCharacter(Long characterId) {
-        if (characterMapper.selectById(characterId) == null) {
+        CharacterEntity character = characterMapper.selectById(characterId);
+        if (character == null) {
             throw BizException.of(ErrorCode.CHARACTER_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(character.getNovelId());
         eventParticipantMapper.delete(Wrappers.<EventParticipantEntity>lambdaQuery()
                 .eq(EventParticipantEntity::getCharacterId, characterId));
         chapterCharacterMapper.delete(Wrappers.<ChapterCharacterEntity>lambdaQuery()
@@ -701,6 +718,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Transactional(rollbackFor = Exception.class)
     public CharacterRelationVO createRelation(Long novelId, RelationRequest request) {
         requireNovel(novelId);
+        autoWriteGuard.assertEditable(novelId);
         Long[] pair = normalizePair(novelId, request);
         ensureNoDuplicate(novelId, pair[0], pair[1], request.getRelationType(), null);
 
@@ -719,6 +737,7 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Transactional(rollbackFor = Exception.class)
     public CharacterRelationVO updateRelation(Long relationId, RelationRequest request) {
         CharacterRelationEntity entity = requireRelation(relationId);
+        autoWriteGuard.assertEditable(entity.getNovelId());
         Long[] pair = normalizePair(entity.getNovelId(), request);
         ensureNoDuplicate(entity.getNovelId(), pair[0], pair[1], request.getRelationType(), relationId);
         applyRelation(entity, request, pair);
@@ -732,9 +751,11 @@ public class NovelAssetServiceImpl implements NovelAssetService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteRelation(Long relationId) {
-        if (characterRelationMapper.selectById(relationId) == null) {
+        CharacterRelationEntity relation = characterRelationMapper.selectById(relationId);
+        if (relation == null) {
             throw BizException.of(ErrorCode.RELATION_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(relation.getNovelId());
         characterRelationMapper.deleteById(relationId);
     }
 

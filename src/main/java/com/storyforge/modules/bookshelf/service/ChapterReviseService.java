@@ -67,12 +67,14 @@ public class ChapterReviseService {
     private final AiUsageService aiUsageService;
     private final ChapterRevisePromptBuilder promptBuilder;
     private final ObjectMapper objectMapper;
+    private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
 
     public ChapterReviseVO revise(Long chapterId, ChapterReviseRequest request) {
         ChapterEntity chapter = chapterMapper.selectById(chapterId);
         if (chapter == null) {
             throw BizException.of(ErrorCode.CHAPTER_NOT_FOUND);
         }
+        autoWriteGuard.assertEditable(chapter.getNovelId());
         if (!hasText(chapter.getContent())) {
             throw BizException.of(ErrorCode.CHAPTER_CONTENT_EMPTY);
         }
