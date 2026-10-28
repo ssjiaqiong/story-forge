@@ -24,6 +24,26 @@
     </aside>
 
     <section class="wb-main">
+      <!-- 自动写书：显著位置提醒 + 全书写操作锁定 -->
+      <div v-if="autoWriteLocked" class="aw-banner">
+        <el-icon class="aw-banner-icon"><Loading /></el-icon>
+        <div class="aw-banner-text">
+          <strong>本书正在自动生成中</strong>
+          <span>编辑功能已锁定，仅可查看；如需手工修改，请到「自动写书」里停止任务。</span>
+        </div>
+        <el-button type="primary" plain size="small" @click="goAutoWrite">前往自动写书</el-button>
+      </div>
+
+      <!-- 自动写书 -->
+      <AutoWritePanel
+        v-show="activeMenu === 'autoWrite'"
+        ref="autoWritePanelRef"
+        :novel-id="novelId"
+        :planned-words="basic.plannedWords || 0"
+        @locked-change="onAutoWriteLockedChange"
+      />
+
+      <fieldset class="wb-lock" :disabled="autoWriteLocked">
       <!-- 基本信息 -->
       <div v-show="activeMenu === 'basic'" class="panel">
         <header class="panel-head">
@@ -1333,6 +1353,7 @@
           <p v-else>还没有体检过。点「只跑规则」先查一遍结构化硬伤，秒出且不用配 AI。</p>
         </div>
       </div>
+      </fieldset>
     </section>
 
     <!-- AI 生成大纲弹窗 -->
@@ -2418,6 +2439,7 @@ import {
 import type { NovelVO } from '@/api/novel'
 import RelationGraph from './components/RelationGraph.vue'
 import SearchSources from './components/SearchSources.vue'
+import AutoWritePanel from './components/AutoWritePanel.vue'
 import ChangeHistoryDrawer from './components/ChangeHistoryDrawer.vue'
 import ChapterVersionDrawer from './components/ChapterVersionDrawer.vue'
 import ChapterReviseDialog from './components/ChapterReviseDialog.vue'
@@ -2526,7 +2548,8 @@ const MENUS = [
   { key: 'items', label: '物品', icon: Collection },
   { key: 'content', label: '正文', icon: Reading },
   { key: 'analysis', label: '分析', icon: DataAnalysis },
-  { key: 'consistency', label: '体检', icon: FirstAidKit }
+  { key: 'consistency', label: '体检', icon: FirstAidKit },
+  { key: 'autoWrite', label: '自动写书', icon: Clock }
 ]
 
 const GENRES = ['玄幻', '仙侠', '都市', '悬疑', '科幻', '历史', '游戏', '轻小说', '武侠', '现实']
@@ -2597,6 +2620,9 @@ const RELATION_TYPES = [
 ]
 
 const loading = ref(false)
+/** 本书是否处于自动生成状态：为 true 时锁定全部编辑操作，仅可查看 */
+const autoWriteLocked = ref(false)
+const autoWritePanelRef = ref<InstanceType<typeof AutoWritePanel> | null>(null)
 const initialTab = typeof route.query.tab === 'string' && MENUS.some((item) => item.key === route.query.tab)
   ? String(route.query.tab)
   : 'basic'
@@ -4524,11 +4550,24 @@ const volumeGroups = computed(() => {
 
 onMounted(loadAll)
 
+function onAutoWriteLockedChange(locked: boolean) {
+  autoWriteLocked.value = locked
+  // 锁定状态变化后，同步刷新书籍详情（autoWriting 标志）
+  if (novel.value) {
+    novel.value = { ...novel.value, autoWriting: locked }
+  }
+}
+
+function goAutoWrite() {
+  activeMenu.value = 'autoWrite'
+}
+
 async function loadAll() {
   loading.value = true
   try {
     const detail = await getNovelDetail(novelId.value)
     novel.value = detail.novel
+    autoWriteLocked.value = !!detail.novel.autoWriting
     basic.title = detail.novel.title || ''
     basic.penName = detail.novel.penName || ''
     basic.genre = detail.novel.genre || ''
@@ -7336,5 +7375,52 @@ function roleType(value?: string) {
 
 .asset-table {
   margin-top: 4px;
+}
+
+/* 自动写书：顶部提醒横幅 */
+.aw-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--el-color-primary-light-5);
+  border-left: 4px solid var(--el-color-primary);
+  border-radius: 8px;
+  background: var(--el-color-primary-light-9);
+}
+
+.aw-banner-icon {
+  font-size: 22px;
+  color: var(--el-color-primary);
+}
+
+.aw-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.aw-banner-text strong {
+  color: var(--el-color-primary);
+}
+
+.aw-banner-text span {
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+}
+
+/* 自动写书：锁定时禁用整块编辑区（fieldset 原生禁用其内的按钮/输入框） */
+.wb-lock {
+  display: contents;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.wb-lock[disabled] {
+  opacity: 0.85;
 }
 </style>
