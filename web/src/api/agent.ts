@@ -109,3 +109,74 @@ export function cancelAgentTask(novelId: string, taskId: string) {
 export function clearAgentSession(novelId: string) {
   return api.delete<void>(`/novels/${novelId}/agent/session`)
 }
+
+/* ------------------------------------------------------------------ */
+/* 任务计划：规划 → 连续执行 → 进度跟踪                                 */
+/* ------------------------------------------------------------------ */
+
+export type AgentPlanStatus = 'PLANNING' | 'RUNNING' | 'PAUSED' | 'DONE' | 'FAILED' | 'CANCELLED'
+export type AgentPlanStepStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'SKIPPED'
+
+export interface AgentPlanStep {
+  id: string
+  stepNo: number
+  title: string
+  detail?: string
+  status: AgentPlanStepStatus
+  reply?: string
+  operations?: AgentOperation[]
+  errorMessage?: string
+}
+
+export interface AgentPlan {
+  id: string
+  novelId: string
+  goal: string
+  status: AgentPlanStatus
+  stepTotal: number
+  stepDone: number
+  percent: number
+  currentStepNo?: number
+  currentStepTitle?: string
+  model?: string
+  errorMessage?: string
+  pausedReason?: string
+  createdAt?: string
+  updatedAt?: string
+  steps: AgentPlanStep[]
+}
+
+/** 启动任务计划：后端先规划步骤，再在后台连续执行 */
+export function startAgentPlan(novelId: string, content: string) {
+  return api.post<AgentPlan>(`/novels/${novelId}/agent/plans`, { content }, 120000)
+}
+
+export function getAgentPlan(novelId: string, planId: string) {
+  return api.get<AgentPlan>(`/novels/${novelId}/agent/plans/${planId}`)
+}
+
+/** 最近一次计划；没有则返回 null（打开面板恢复任务卡用） */
+export function getLatestAgentPlan(novelId: string) {
+  return api.get<AgentPlan | null>(`/novels/${novelId}/agent/plans/latest`)
+}
+
+export function pauseAgentPlan(novelId: string, planId: string) {
+  return api.post<AgentPlan>(`/novels/${novelId}/agent/plans/${planId}/pause`)
+}
+
+export function resumeAgentPlan(novelId: string, planId: string) {
+  return api.post<AgentPlan>(`/novels/${novelId}/agent/plans/${planId}/resume`)
+}
+
+export function cancelAgentPlan(novelId: string, planId: string) {
+  return api.delete<AgentPlan>(`/novels/${novelId}/agent/plans/${planId}`)
+}
+
+export const AGENT_PLAN_STATUS_LABELS: Record<AgentPlanStatus, string> = {
+  PLANNING: '正在拆解任务',
+  RUNNING: '执行中',
+  PAUSED: '已暂停',
+  DONE: '已完成',
+  FAILED: '失败',
+  CANCELLED: '已取消'
+}

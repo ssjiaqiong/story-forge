@@ -115,6 +115,10 @@ public enum ErrorCode {
     AUTO_WRITE_CRON_INVALID(40075, "cron 表达式不正确，请填写 6 段式（秒 分 时 日 月 周）", 400),
     AUTO_WRITE_CONFIG_INVALID(40076, "自动写书配置不正确", 400),
     AUTO_WRITE_RUNNING(40077, "本书的自动写书任务正在执行中，请稍候再试", 409),
+    AGENT_PLAN_NOT_FOUND(40078, "助手任务不存在或已被删除", 404),
+    AGENT_PLAN_RUNNING(40079, "本书已有一个助手任务在执行，请等它结束或先暂停", 409),
+    AGENT_PLAN_STATE_INVALID(40080, "当前任务状态不支持该操作", 400),
+    AGENT_PLAN_PLANNING_FAILED(40081, "没能把这条指令拆成可执行的步骤，请说得更具体一些", 502),
 
     /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),

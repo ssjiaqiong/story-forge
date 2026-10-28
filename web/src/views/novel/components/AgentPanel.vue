@@ -11,6 +11,38 @@
     <div class="agent-shell">
       <div ref="resizeHandle" class="resize-handle" @mousedown.prevent="onResizeStart" />
       <div class="agent-main">
+      <div v-if="plan" class="aplan" :class="`aplan-${plan.status.toLowerCase()}`">
+        <div class="aplan-head">
+          <span class="aplan-title">任务计划</span>
+          <span class="aplan-status">{{ planStatusLabel(plan.status) }}</span>
+          <span class="aplan-spacer" />
+          <el-button v-if="planRunning" size="small" text @click="onPausePlan">暂停</el-button>
+          <el-button v-if="planCanResume" size="small" text type="primary" @click="onResumePlan">继续</el-button>
+          <el-button v-if="planRunning || planCanResume" size="small" text type="danger" @click="onCancelPlan">
+            取消
+          </el-button>
+        </div>
+        <div class="aplan-goal">{{ plan.goal }}</div>
+        <div class="aplan-progress">
+          <div class="aplan-bar"><div class="aplan-bar-fill" :style="{ width: `${plan.percent}%` }" /></div>
+          <span class="aplan-count">
+            {{ plan.stepTotal ? `${plan.stepDone} / ${plan.stepTotal} 步 · ${plan.percent}%` : '拆解中…' }}
+          </span>
+        </div>
+        <div v-if="plan.pausedReason" class="aplan-note">{{ plan.pausedReason }}</div>
+        <div v-if="plan.errorMessage" class="aplan-note is-error">{{ plan.errorMessage }}</div>
+        <ol v-if="plan.steps.length" class="aplan-steps">
+          <li v-for="step in plan.steps" :key="step.id" class="aplan-step" :class="`is-${step.status.toLowerCase()}`">
+            <span class="aplan-mark">{{ stepMark(step.status) }}</span>
+            <div class="aplan-step-body">
+              <div class="aplan-step-title">{{ step.stepNo }}. {{ step.title }}</div>
+              <div v-if="step.reply" class="aplan-step-reply">{{ step.reply }}</div>
+              <div v-if="step.errorMessage" class="aplan-step-error">{{ step.errorMessage }}</div>
+            </div>
+          </li>
+        </ol>
+      </div>
+
       <div ref="scrollRef" v-loading="loading" class="agent-list">
         <div v-if="!loading && messages.length === 0" class="agent-empty">
           <div class="agent-empty-mark">助手</div>
@@ -88,6 +120,10 @@
           @keydown="onKeydown"
         />
         <div class="acomposer-bar">
+          <label class="acomposer-mode">
+            <el-switch v-model="planMode" size="small" />
+            <span>分步执行</span>
+          </label>
           <el-button text :disabled="messages.length === 0" @click="onClear">清空会话</el-button>
           <div class="acomposer-actions">
             <el-button v-if="sending" type="danger" plain @click="onStop">停止</el-button>
@@ -107,14 +143,24 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   AGENT_OPERATION_LABELS,
+  AGENT_PLAN_STATUS_LABELS,
+  cancelAgentPlan,
   cancelAgentTask,
   clearAgentSession,
+  getAgentPlan,
   getAgentSession,
   getAgentTask,
+  getLatestAgentPlan,
   getRunningAgentTask,
+  pauseAgentPlan,
+  resumeAgentPlan,
+  startAgentPlan,
   startAgentTask,
   type AgentMessage,
   type AgentOperation,
+  type AgentPlan,
+  type AgentPlanStatus,
+  type AgentPlanStepStatus,
   type AgentTask
 } from '@/api/agent'
 
@@ -146,6 +192,18 @@ const scrollRef = ref<HTMLElement | null>(null)
 const running = ref<AgentTask | null>(null)
 let pollTimer: number | null = null
 let currentTaskId: string | null = null
+
+/**
+ * 任务计划（分步执行）：
+ * 关掉时走老的「一次指令 6 轮」路径，打开时先拆步骤再连续执行，进度可跟踪。
+ * 默认打开——复杂指令（重建总纲、批量挂大纲）必须靠它才能跑完。
+ */
+const planMode = ref(true)
+const plan = ref<AgentPlan | null>(null)
+let planTimer: number | null = null
+
+const planRunning = computed(() => plan.value?.status === 'RUNNING' || plan.value?.status === 'PLANNING')
+const planCanResume = computed(() => plan.value?.status === 'PAUSED' || plan.value?.status === 'FAILED')
 
 // 抽屉可拖拽拉宽
 const drawerSize = ref('460px')
@@ -182,6 +240,7 @@ async function loadSession() {
     await scrollToBottom()
     // 刷新后若有进行中的任务，恢复轮询（不阻塞会话加载，否则 loading 遮罩会一直转）
     void resumeRunningTask()
+    void loadLatestPlan()
   }
 }
 
@@ -240,7 +299,14 @@ async function onSend() {
   await scrollToBottom()
 
   try {
-    // 启动后台多步任务，拿到 taskId 后轮询进度，实时感知中间过程
+    if (planMode.value) {
+      // 分步执行：先规划再连续跑，不需要用户反复说「继续」
+      const started = await startAgentPlan(props.novelId, text)
+      plan.value = started
+      await pollPlan(started.id)
+      return
+    }
+    // 老路径：启动后台多步任务，拿到 taskId 后轮询进度，实时感知中间过程
     const task = await startAgentTask(props.novelId, text)
     currentTaskId = task.taskId
     running.value = task
@@ -259,8 +325,141 @@ async function onSend() {
   }
 }
 
+/* ---------------- 任务计划 ---------------- */
+
+function planStatusLabel(status: AgentPlanStatus) {
+  return AGENT_PLAN_STATUS_LABELS[status] || status
+}
+
+function stepMark(status: AgentPlanStepStatus) {
+  switch (status) {
+    case 'DONE': return '✓'
+    case 'RUNNING': return '●'
+    case 'FAILED': return '✕'
+    case 'SKIPPED': return '—'
+    default: return '○'
+  }
+}
+
+/** 打开抽屉时恢复最近一次计划：进行中的继续轮询，已结束的留作记录。 */
+async function loadLatestPlan() {
+  try {
+    const latest = await getLatestAgentPlan(props.novelId)
+    if (!latest) {
+      return
+    }
+    plan.value = latest
+    if (latest.status === 'RUNNING' || latest.status === 'PLANNING') {
+      sending.value = true
+      await pollPlan(latest.id)
+      sending.value = false
+    }
+  } catch {
+    // 没有计划或查询失败，静默忽略
+  }
+}
+
+/** 轮询计划直到进入终态（DONE / FAILED / CANCELLED）或暂停。 */
+async function pollPlan(planId: string) {
+  return new Promise<void>((resolve) => {
+    stopPlanPolling()
+    planTimer = window.setInterval(async () => {
+      try {
+        const latest = await getAgentPlan(props.novelId, planId)
+        plan.value = latest
+        if (!planRunning.value) {
+          stopPlanPolling()
+          if (latest.status === 'DONE') {
+            ElMessage.success(`任务已完成：${latest.stepDone}/${latest.stepTotal} 步`)
+          } else if (latest.status === 'PAUSED') {
+            ElMessage.warning(latest.pausedReason || '任务已暂停')
+          } else if (latest.status === 'FAILED') {
+            ElMessage.error(latest.errorMessage || '任务失败')
+          }
+          await loadSession()
+          emit('edited')
+          resolve()
+        }
+      } catch (error) {
+        stopPlanPolling()
+        ElMessage.error((error as Error).message || '查询任务进度失败')
+        resolve()
+      }
+    }, 1500)
+  })
+}
+
+function stopPlanPolling() {
+  if (planTimer !== null) {
+    window.clearInterval(planTimer)
+    planTimer = null
+  }
+}
+
+async function onPausePlan() {
+  if (!plan.value) {
+    return
+  }
+  try {
+    plan.value = await pauseAgentPlan(props.novelId, plan.value.id)
+    ElMessage.info('已请求暂停，当前步骤做完后停下')
+  } catch (error) {
+    ElMessage.error((error as Error).message || '暂停失败')
+  }
+}
+
+async function onResumePlan() {
+  if (!plan.value) {
+    return
+  }
+  try {
+    plan.value = await resumeAgentPlan(props.novelId, plan.value.id)
+    sending.value = true
+    await pollPlan(plan.value.id)
+    sending.value = false
+  } catch (error) {
+    ElMessage.error((error as Error).message || '继续失败')
+  }
+}
+
+async function onCancelPlan() {
+  if (!plan.value) {
+    return
+  }
+  try {
+    await ElMessageBox.confirm('取消后当前步骤会立刻停下，已经改过的内容不会回滚。', '取消任务', {
+      type: 'warning',
+      confirmButtonText: '取消任务',
+      cancelButtonText: '继续执行'
+    })
+  } catch {
+    return
+  }
+  try {
+    plan.value = await cancelAgentPlan(props.novelId, plan.value.id)
+    stopPlanPolling()
+    sending.value = false
+    ElMessage.info('任务已取消')
+  } catch (error) {
+    ElMessage.error((error as Error).message || '取消失败')
+  }
+}
+
 async function onStop() {
-  if (!sending.value || !currentTaskId) {
+  if (!sending.value) {
+    return
+  }
+  // 分步执行时「停止」= 取消计划，当前步结束后不再继续
+  if (plan.value && planRunning.value) {
+    try {
+      await cancelAgentPlan(props.novelId, plan.value.id)
+      ElMessage.info('已请求取消，当前步骤结束后停止')
+    } catch (error) {
+      ElMessage.error((error as Error).message || '取消失败')
+    }
+    return
+  }
+  if (!currentTaskId) {
     return
   }
   const taskId = currentTaskId
@@ -395,6 +594,7 @@ function onResizeStart(event: MouseEvent) {
 
 onUnmounted(() => {
   stopPolling()
+  stopPlanPolling()
 })
 </script>
 
@@ -424,6 +624,216 @@ onUnmounted(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* ── 任务计划卡：规划 / 执行 / 进度 ── */
+.aplan {
+  flex: none;
+  margin: 8px 6px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--sf-border);
+  border-left: 3px solid var(--sf-brand);
+  border-radius: 8px;
+  background: var(--sf-bg-card);
+}
+
+.aplan-done {
+  border-left-color: #16a34a;
+}
+
+.aplan-paused {
+  border-left-color: #d97706;
+}
+
+.aplan-failed,
+.aplan-cancelled {
+  border-left-color: #dc2626;
+}
+
+.aplan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aplan-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sf-text-primary);
+}
+
+.aplan-status {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(59, 110, 246, 0.12);
+  color: var(--sf-brand);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.aplan-running .aplan-status {
+  background: rgba(59, 110, 246, 0.12);
+  color: var(--sf-brand);
+}
+
+.aplan-done .aplan-status {
+  background: rgba(22, 163, 74, 0.12);
+  color: #16a34a;
+}
+
+.aplan-paused .aplan-status {
+  background: rgba(217, 119, 6, 0.12);
+  color: #d97706;
+}
+
+.aplan-failed .aplan-status,
+.aplan-cancelled .aplan-status {
+  background: rgba(220, 38, 38, 0.1);
+  color: #dc2626;
+}
+
+.aplan-spacer {
+  flex: 1;
+}
+
+.aplan-goal {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--sf-text-regular);
+  word-break: break-word;
+}
+
+.aplan-progress {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aplan-bar {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--sf-border);
+  overflow: hidden;
+}
+
+.aplan-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--sf-brand);
+  transition: width 0.3s ease;
+}
+
+.aplan-done .aplan-bar-fill {
+  background: #16a34a;
+}
+
+.aplan-paused .aplan-bar-fill {
+  background: #d97706;
+}
+
+.aplan-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--sf-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.aplan-note {
+  margin-top: 7px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(217, 119, 6, 0.1);
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.aplan-note.is-error {
+  background: rgba(220, 38, 38, 0.08);
+  color: #dc2626;
+}
+
+.aplan-steps {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 32vh;
+  overflow-y: auto;
+}
+
+.aplan-step {
+  display: flex;
+  gap: 7px;
+  padding: 4px 0;
+  border-top: 1px dashed var(--sf-border);
+}
+
+.aplan-step:first-child {
+  border-top: none;
+}
+
+.aplan-mark {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--sf-text-muted);
+}
+
+.aplan-step.is-done .aplan-mark {
+  color: #16a34a;
+}
+
+.aplan-step.is-running .aplan-mark {
+  color: var(--sf-brand);
+}
+
+.aplan-step.is-failed .aplan-mark {
+  color: #dc2626;
+}
+
+.aplan-step-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.aplan-step-title {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--sf-text-regular);
+  word-break: break-word;
+}
+
+.aplan-step.is-done .aplan-step-title {
+  color: var(--sf-text-muted);
+}
+
+.aplan-step.is-running .aplan-step-title {
+  color: var(--sf-text-primary);
+  font-weight: 500;
+}
+
+.aplan-step-reply {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--sf-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.aplan-step-error {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #dc2626;
 }
 
 .agent-list {
@@ -664,6 +1074,17 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.acomposer-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--sf-text-muted);
+  cursor: pointer;
+  user-select: none;
 }
 
 .acomposer-actions {

@@ -250,6 +250,74 @@ public class NovelAgentService {
         return sendInternal(novelId, request, sink, cancelCheck);
     }
 
+    /* ------------------------------------------------------------------ */
+    /* 供「任务计划」引擎复用的单轮入口                                     */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * 一轮执行的结果。
+     *
+     * @param reply            模型给作者的自然语言说明
+     * @param operations       本轮执行的操作（成功/失败）
+     * @param done             模型是否声明这一步做完了
+     * @param model            实际模型名
+     * @param promptTokens     提示词 token
+     * @param completionTokens 生成 token
+     */
+    public record AgentTurn(String reply, List<AgentOperationVO> operations, boolean done,
+                            String model, Integer promptTokens, Integer completionTokens) {
+    }
+
+    /** 拼一份带当前小说快照的 system 提示词，{@code extra} 追加在执行准则之后。 */
+    public String systemPromptWith(Long novelId, String extra) {
+        return systemPrompt(novelId, extra);
+    }
+
+    /**
+     * 单轮：调一次模型 → 解析 {@code reply / operations} → 执行操作。
+     *
+     * <p>计划引擎按步调用它，因此这里<b>不</b>做多轮循环，也不写会话消息——节奏由调用方掌握。</p>
+     */
+    public AgentTurn runTurn(Long novelId, String systemPromptText, String userText) {
+        AiEndpoint endpoint = resolveAgentEndpoint();
+        List<ChatMessage> payload = List.of(
+                ChatMessage.system(systemPromptText),
+                ChatMessage.user(userText));
+        ChatResult reply = aiUsageService.chat(AiScene.NOVEL_AGENT, endpoint, payload);
+        AgentReply parsed = parseReply(reply.content());
+        List<AgentOperationVO> operations = executeOperations(novelId, parsed.operations());
+        return new AgentTurn(hasText(parsed.reply()) ? parsed.reply() : "", operations, parsed.done(),
+                reply.model(), reply.promptTokens(), reply.completionTokens());
+    }
+
+    /**
+     * 原始回复文本，不解析操作。
+     *
+     * <p>规划阶段只要结构化文本（步骤清单），绝不能顺手执行 operations——那会把作者的
+     * 「先规划」变成「边规划边改库」。</p>
+     */
+    public String rawChat(Long novelId, String systemPromptText, String userText) {
+        AiEndpoint endpoint = resolveAgentEndpoint();
+        ChatResult reply = aiUsageService.chat(AiScene.NOVEL_AGENT, endpoint,
+                List.of(ChatMessage.system(systemPromptText), ChatMessage.user(userText)));
+        return reply.content();
+    }
+
+    /** 往会话里追加一条用户消息（计划开始时登记原始指令）。 */
+    public void appendUserMessage(Long novelId, String content) {
+        NovelAgentSessionEntity session = getOrCreateSession(novelId);
+        saveMessage(session, "USER", content, null, "OK", null, null, null, null);
+        updateSessionStats(session, null);
+    }
+
+    /** 往会话里追加一条助手消息（计划按步记录进度）。 */
+    public void appendAssistantMessage(Long novelId, String content, List<AgentOperationVO> operations,
+                                       String model, Integer promptTokens, Integer completionTokens) {
+        NovelAgentSessionEntity session = getOrCreateSession(novelId);
+        saveMessage(session, "ASSISTANT", content, operations, "OK", model, promptTokens, completionTokens, null);
+        updateSessionStats(session, null);
+    }
+
     private AgentSendResult sendInternal(Long novelId, AgentSendRequest request, TurnSink sink, CancelCheck cancelCheck) {
         requireNovel(novelId);
         String content = request.getContent().trim();

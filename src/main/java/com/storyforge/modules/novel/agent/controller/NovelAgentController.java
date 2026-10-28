@@ -4,10 +4,12 @@ import com.storyforge.common.api.R;
 import com.storyforge.common.audit.Audit;
 import com.storyforge.common.context.UserContextHolder;
 import com.storyforge.common.ratelimit.RateLimit;
+import com.storyforge.modules.novel.agent.dto.AgentPlanVO;
 import com.storyforge.modules.novel.agent.dto.AgentSendRequest;
 import com.storyforge.modules.novel.agent.dto.AgentSendResult;
 import com.storyforge.modules.novel.agent.dto.AgentSessionVO;
 import com.storyforge.modules.novel.agent.dto.AgentTaskVO;
+import com.storyforge.modules.novel.agent.service.NovelAgentPlanService;
 import com.storyforge.modules.novel.agent.service.NovelAgentService;
 import com.storyforge.modules.novel.agent.service.NovelAgentTaskService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -33,6 +35,7 @@ public class NovelAgentController {
 
     private final NovelAgentService agentService;
     private final NovelAgentTaskService agentTaskService;
+    private final NovelAgentPlanService planService;
 
     @Operation(summary = "获取助手会话", description = "不存在时自动创建；返回聊天记录")
     @GetMapping("/session")
@@ -86,5 +89,51 @@ public class NovelAgentController {
     public R<Void> clear(@PathVariable Long novelId) {
         agentService.clearSession(novelId);
         return R.ok();
+    }
+
+    /* ---------------- 任务计划：规划 → 连续执行 → 进度跟踪 ---------------- */
+
+    @Operation(summary = "启动助手任务计划",
+            description = "先把指令拆成步骤（规划），再在后台逐步执行到完成；不需要用户反复说「继续」")
+    @PostMapping("/plans")
+    @Audit(action = "NOVEL_AGENT_PLAN", targetType = "NOVEL")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 20, windowSeconds = 60)
+    public R<AgentPlanVO> startPlan(@PathVariable Long novelId, @Valid @RequestBody AgentSendRequest request) {
+        return R.ok(planService.start(novelId, request));
+    }
+
+    @Operation(summary = "查询助手任务计划", description = "整体进度 + 每一步的状态与执行结果")
+    @GetMapping("/plans/{planId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 900, windowSeconds = 60)
+    public R<AgentPlanVO> planStatus(@PathVariable Long novelId, @PathVariable Long planId) {
+        return R.ok(planService.status(planId));
+    }
+
+    @Operation(summary = "查询本书最近一次任务计划", description = "打开面板时恢复任务卡；没有则 data 为 null")
+    @GetMapping("/plans/latest")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 600, windowSeconds = 60)
+    public R<AgentPlanVO> latestPlan(@PathVariable Long novelId) {
+        return R.ok(planService.latest(novelId));
+    }
+
+    @Operation(summary = "暂停助手任务", description = "当前步做完后停下，可再点继续")
+    @PostMapping("/plans/{planId}/pause")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
+    public R<AgentPlanVO> pausePlan(@PathVariable Long novelId, @PathVariable Long planId) {
+        return R.ok(planService.pause(novelId, planId));
+    }
+
+    @Operation(summary = "继续助手任务", description = "从断点接着跑，不重新规划")
+    @PostMapping("/plans/{planId}/resume")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
+    public R<AgentPlanVO> resumePlan(@PathVariable Long novelId, @PathVariable Long planId) {
+        return R.ok(planService.resume(novelId, planId));
+    }
+
+    @Operation(summary = "取消助手任务", description = "立刻停手；已做的修改不回滚")
+    @DeleteMapping("/plans/{planId}")
+    @RateLimit(dimension = RateLimit.Dimension.USER, limit = 120, windowSeconds = 60)
+    public R<AgentPlanVO> cancelPlan(@PathVariable Long novelId, @PathVariable Long planId) {
+        return R.ok(planService.cancel(novelId, planId));
     }
 }
