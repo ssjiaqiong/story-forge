@@ -81,6 +81,8 @@ public class AdminNovelServiceImpl implements AdminNovelService {
             // 创作助手会话
             "t_novel_agent_message",
             "t_novel_agent_session",
+            // 助手分步任务（步骤表只有 plan_id，走子查询单独删，见 purgeOne）
+            "t_novel_agent_plan",
             // 正文历史、一致性台账、卷（后加的表，别漏在级联之外）
             "t_chapter_version",
             "t_consistency_issue",
@@ -201,6 +203,12 @@ public class AdminNovelServiceImpl implements AdminNovelService {
 
     /** 事务内逐表删除关联数据 + 主表。 */
     private void deleteRows(Long novelId, AdminPurgeResultVO result) {
+        // 助手分步任务的步骤表只有 plan_id，没有 novel_id，白名单那套 ${table} WHERE novel_id 用不上，
+        // 必须赶在计划表被删之前用子查询清掉，否则留下孤儿行。
+        int stepRows = DataPermissionContext.withoutIsolation(
+                () -> adminNovelMapper.deleteAgentPlanStepByNovelId(novelId));
+        result.addRows("t_novel_agent_plan_step", stepRows);
+
         for (String table : NOVEL_CHILD_TABLES) {
             int rows = DataPermissionContext.withoutIsolation(
                     () -> adminNovelMapper.deleteByNovelId(table, novelId));

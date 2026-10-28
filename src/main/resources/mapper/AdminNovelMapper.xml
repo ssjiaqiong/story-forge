@@ -126,6 +126,12 @@
         DELETE FROM ${table} WHERE novel_id = #{novelId}
     </delete>
 
+    <!-- 步骤表只有 plan_id：先按 novel_id 找出计划，再删对应步骤；须在删计划之前执行 -->
+    <delete id="deleteAgentPlanStepByNovelId">
+        DELETE FROM t_novel_agent_plan_step
+        WHERE plan_id IN (SELECT id FROM t_novel_agent_plan WHERE novel_id = #{novelId})
+    </delete>
+
     <delete id="deleteNovelById">
         DELETE FROM t_novel WHERE id = #{novelId}
     </delete>

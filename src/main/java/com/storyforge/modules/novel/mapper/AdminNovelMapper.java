@@ -44,6 +44,14 @@ public interface AdminNovelMapper {
      */
     int deleteByNovelId(@Param("table") String table, @Param("novelId") Long novelId);
 
+    /**
+     * 物理删除某部小说下全部助手分步任务的步骤。
+     *
+     * <p>步骤表只有 {@code plan_id}、没有 {@code novel_id}，所以不能走 {@link #deleteByNovelId}
+     * 的白名单通道，改用子查询；必须在删 {@code t_novel_agent_plan} 之前调用。</p>
+     */
+    int deleteAgentPlanStepByNovelId(@Param("novelId") Long novelId);
+
     /** 物理删除小说主表行。 */
     int deleteNovelById(@Param("novelId") Long novelId);
 
