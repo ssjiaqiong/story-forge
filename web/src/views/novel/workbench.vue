@@ -56,7 +56,7 @@
           </div>
         </header>
 
-        <el-form label-width="88px" class="basic-form">
+        <el-form label-width="104px" class="basic-form">
           <el-row :gutter="16">
             <el-col :span="12">
               <el-form-item label="书名" required>
@@ -113,7 +113,7 @@
           <span>设定</span>
           <el-button :loading="settingSaving" size="small" type="primary" plain @click="saveSettings">保存设定</el-button>
         </div>
-        <el-form label-width="88px" class="basic-form">
+        <el-form label-width="104px" class="basic-form">
           <el-form-item label="世界观">
             <el-input v-model="settings.WORLDVIEW" type="textarea" :autosize="{ minRows: 4, maxRows: 10 }" placeholder="世界规则、力量体系、势力格局" />
           </el-form-item>
@@ -5876,8 +5876,9 @@ function roleType(value?: string) {
   background: rgba(59, 110, 246, 0.12);
 }
 
+/* 侧栏底部动作（助手 / 导出 / 返回）：紧跟菜单，不靠 margin-top:auto 推到页面最底部 */
 .wb-side-foot {
-  margin-top: auto;
+  margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--sf-border, #ebeef5);
   display: flex;
