@@ -112,6 +112,19 @@ public class AiUsageService {
      */
     public ChatStreamResult chatStream(AiScene scene, AiEndpoint endpoint, List<ChatMessage> messages,
                                        Consumer<String> onDelta) {
+        return chatStream(scene, endpoint, messages, onDelta, text -> {
+        });
+    }
+
+    /**
+     * 流式对话（带思考增量）。
+     *
+     * <p>{@code onThinking} 只在推理模型先吐 {@code reasoning_content} 时被调用，用来填补
+     * 「请求已发出、正文一个字都还没来」那段几十秒的静默；它和 {@code onDelta} 共用同一套
+     * 中止语义——客户端断开时同样抛 {@link StreamAbortedException}。</p>
+     */
+    public ChatStreamResult chatStream(AiScene scene, AiEndpoint endpoint, List<ChatMessage> messages,
+                                       Consumer<String> onDelta, Consumer<String> onThinking) {
         String model = endpoint == null ? null : endpoint.model();
         int messageCount = messages == null ? 0 : messages.size();
         int messageChars = 0;
@@ -129,17 +142,23 @@ public class AiUsageService {
             emitted.set(true);
             onDelta.accept(text);
         };
+        // 思考增量同样算「已经吐过东西」：此时重试会让前端看到两段思考，同样属于内容错乱
+        Consumer<String> guardedThinking = text -> {
+            emitted.set(true);
+            onThinking.accept(text);
+        };
 
         long startedAt = System.currentTimeMillis();
         RuntimeException failure = null;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             try {
-                ChatStreamResult result = openAiClient.chatStream(endpoint, messages, guarded);
+                ChatStreamResult result = openAiClient.chatStream(endpoint, messages, guarded, guardedThinking);
                 save(scene, endpoint, result.model(), result.promptTokens(), result.completionTokens(),
                         (int) Math.min(result.latencyMs(), Integer.MAX_VALUE), null);
-                log.info("[ai] 流式请求完成 scene={} model={} latency={}ms 首字={}ms 增量={} 字={} tokens=({},{}) 第{}次",
-                        scene, result.model(), result.latencyMs(), result.firstTokenMs(), result.deltaCount(),
-                        result.content() == null ? 0 : result.content().length(),
+                log.info("[ai] 流式请求完成 scene={} model={} latency={}ms 首字={}ms 首思考={}ms 增量={} 字={} 思考字={} tokens=({},{}) 第{}次",
+                        scene, result.model(), result.latencyMs(), result.firstTokenMs(), result.firstReasoningMs(),
+                        result.deltaCount(), result.content() == null ? 0 : result.content().length(),
+                        result.reasoning() == null ? 0 : result.reasoning().length(),
                         result.promptTokens(), result.completionTokens(), attempt);
                 return result;
             } catch (StreamAbortedException aborted) {

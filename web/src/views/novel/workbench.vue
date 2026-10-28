@@ -852,9 +852,20 @@
                 <strong class="stream-label">AI 正在写这一章</strong>
                 <span class="stream-meta">已生成 {{ contentWords }} / 目标 {{ streamTargetWords }} 字</span>
                 <span v-if="streamFirstTokenMs !== null" class="stream-meta">首字 {{ (streamFirstTokenMs / 1000).toFixed(1) }}s</span>
+                <span v-else-if="contentThinking" class="stream-meta">模型思考中 {{ aiContentElapsed }}s</span>
                 <span v-if="aiContentElapsed > 0" class="stream-meta">已用 {{ aiContentElapsed }}s</span>
                 <span class="stream-spacer" />
                 <el-button size="small" :icon="VideoPause" @click="stopContentStream">停止</el-button>
+              </div>
+
+              <div v-if="contentThinking" class="stream-thinking">
+                <button type="button" class="stream-thinking-head" @click="toggleThinking">
+                  <span class="stream-thinking-title">
+                    {{ streamFirstTokenMs === null ? '模型思考中' : '模型思考已完成' }} · {{ contentThinkingWords }} 字
+                  </span>
+                  <span class="stream-thinking-hint">{{ contentThinkingOpen ? '收起' : '展开' }}</span>
+                </button>
+                <pre v-show="contentThinkingOpen" ref="thinkingBoxRef" class="stream-thinking-body">{{ contentThinking }}</pre>
               </div>
 
               <el-input
@@ -2424,7 +2435,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Aim, ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, Edit, EditPen, Files, FirstAidKit, Loading, Lock, MagicStick, MoreFilled, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
@@ -3861,6 +3872,8 @@ async function submitAiContent() {
   contentStreaming.value = true
   streamTargetWords.value = aiContentDialog.targetWords
   streamFirstTokenMs.value = null
+  contentThinking.value = ''
+  contentThinkingOpen.value = true
   aiContentElapsed.value = 0
   aiContentTimer = window.setInterval(() => {
     aiContentElapsed.value += 1
@@ -3885,9 +3898,17 @@ async function submitAiContent() {
       onDelta: (text) => {
         if (streamFirstTokenMs.value === null) {
           streamFirstTokenMs.value = Math.round(performance.now() - startedAt)
+          // 正文来了，思考区自动收起，但不丢——作者想回看推理过程还能展开
+          contentThinkingOpen.value = false
         }
         contentDraft.value += text
         scrollEditorToBottom()
+      },
+      onThinking: (text) => {
+        contentThinking.value += text
+        if (contentThinkingOpen.value) {
+          scrollThinkingToBottom()
+        }
       }
     })
 
@@ -4460,6 +4481,33 @@ const contentStreaming = ref(false)
 const streamTargetWords = ref(2500)
 /** 首字延迟（毫秒），-1 表示还没收到第一个字 */
 const streamFirstTokenMs = ref<number | null>(null)
+/**
+ * 推理模型的思考文本。
+ *
+ * 推理模型先想几十秒才吐正文，这期间如果界面什么都不动，作者会以为卡死。这里把思考
+ * 原文流式显示出来当进度用——它只是「模型的草稿」，不参与正文，正文一到就自动收起。
+ */
+const contentThinking = ref('')
+const contentThinkingOpen = ref(true)
+const thinkingBoxRef = ref<HTMLElement | null>(null)
+const contentThinkingWords = computed(() =>
+  (contentThinking.value.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || []).length)
+
+function scrollThinkingToBottom() {
+  nextTick(() => {
+    const box = thinkingBoxRef.value
+    if (box) {
+      box.scrollTop = box.scrollHeight
+    }
+  })
+}
+
+function toggleThinking() {
+  contentThinkingOpen.value = !contentThinkingOpen.value
+  if (contentThinkingOpen.value) {
+    scrollThinkingToBottom()
+  }
+}
 const contentEditorRef = ref()
 let contentAbort: AbortController | null = null
 let editorScrollPending = false
@@ -6720,6 +6768,54 @@ function roleType(value?: string) {
     opacity: 0.35;
     transform: scale(0.72);
   }
+}
+
+/* 推理模型的思考区：只作进度展示，正文一到就收起 */
+.stream-thinking {
+  margin-bottom: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+  overflow: hidden;
+}
+
+.stream-thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  text-align: left;
+}
+
+.stream-thinking-head:hover {
+  background: var(--el-fill-color-light);
+}
+
+.stream-thinking-title {
+  flex: 1;
+}
+
+.stream-thinking-hint {
+  color: var(--el-color-primary);
+}
+
+.stream-thinking-body {
+  margin: 0;
+  padding: 0 12px 12px;
+  max-height: 180px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--el-text-color-regular);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .stream-label {

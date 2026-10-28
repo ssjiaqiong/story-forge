@@ -14,6 +14,8 @@ package com.storyforge.infra.ai;
  * @param promptTokens     提示词 token，上游没给时为 {@code null}
  * @param completionTokens 生成 token，上游没给时为 {@code null}
  * @param deltaCount       收到的增量条数
+ * @param reasoning        推理模型的思考文本（{@code reasoning_content}），非推理模型为空串
+ * @param firstReasoningMs 从发请求到收到首条思考增量的毫秒数，没收到时为 -1
  */
 public record ChatStreamResult(
         String content,
@@ -22,7 +24,9 @@ public record ChatStreamResult(
         long latencyMs,
         Integer promptTokens,
         Integer completionTokens,
-        int deltaCount) {
+        int deltaCount,
+        String reasoning,
+        long firstReasoningMs) {
 
     /** 上游完全没吐增量：既不是流式协议，也没有可用的整段回复。 */
     public boolean empty() {

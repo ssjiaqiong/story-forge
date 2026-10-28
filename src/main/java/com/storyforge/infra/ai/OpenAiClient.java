@@ -168,6 +168,20 @@ public class OpenAiClient {
      * <p>{@code onDelta} 抛 {@link StreamAbortedException} 表示客户端不要了：立即关闭上游连接。</p>
      */
     public ChatStreamResult chatStream(AiEndpoint endpoint, List<ChatMessage> messages, Consumer<String> onDelta) {
+        return chatStream(endpoint, messages, onDelta, text -> {
+        });
+    }
+
+    /**
+     * 多轮对话（流式，带思考增量）。
+     *
+     * <p>推理模型（DeepSeek-R1 系、各家的 thinking 变体）会先吐几十秒的
+     * {@code delta.reasoning_content}，正文 {@code delta.content} 才姗姗来迟。只读 content
+     * 会让前端在整段思考期间毫无反馈，看上去像卡死——{@code onThinking} 就是给这段静默期
+     * 用的：吐出的仍是模型的思考原文，但只作为「进度」展示，绝不并入正文。</p>
+     */
+    public ChatStreamResult chatStream(AiEndpoint endpoint, List<ChatMessage> messages,
+                                       Consumer<String> onDelta, Consumer<String> onThinking) {
         if (endpoint.apiKey() == null || endpoint.apiKey().isBlank()) {
             throw new IllegalStateException("未配置 API Key");
         }
@@ -195,7 +209,7 @@ public class OpenAiClient {
                     throw new IllegalStateException(describeHttpError(response.statusCode(), errorBody));
                 }
             }
-            return readStream(endpoint, response, onDelta, startedAt);
+            return readStream(endpoint, response, onDelta, onThinking, startedAt);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("请求被中断", ex);
@@ -224,12 +238,15 @@ public class OpenAiClient {
     private ChatStreamResult readStream(AiEndpoint endpoint,
                                         HttpResponse<Stream<String>> response,
                                         Consumer<String> onDelta,
+                                        Consumer<String> onThinking,
                                         long startedAt) {
         StringBuilder content = new StringBuilder();
+        StringBuilder reasoning = new StringBuilder();
         String model = endpoint.model();
         Integer promptTokens = null;
         Integer completionTokens = null;
         long firstTokenMs = -1L;
+        long firstReasoningMs = -1L;
         int deltaCount = 0;
 
         try (Stream<String> lines = response.body()) {
@@ -280,6 +297,16 @@ public class OpenAiClient {
                     }
                 }
 
+                // 思考增量先于正文到达，单独累加并回调：它是进度信号，不进正文
+                String thinking = reasoningText(root);
+                if (thinking != null && !thinking.isEmpty()) {
+                    if (firstReasoningMs < 0) {
+                        firstReasoningMs = System.currentTimeMillis() - startedAt;
+                    }
+                    reasoning.append(thinking);
+                    onThinking.accept(thinking);
+                }
+
                 String text = deltaText(root);
                 if (text == null || text.isEmpty()) {
                     continue;
@@ -293,7 +320,26 @@ public class OpenAiClient {
             }
         }
         return new ChatStreamResult(content.toString(), model, firstTokenMs,
-                System.currentTimeMillis() - startedAt, promptTokens, completionTokens, deltaCount);
+                System.currentTimeMillis() - startedAt, promptTokens, completionTokens, deltaCount,
+                reasoning.toString(), firstReasoningMs);
+    }
+
+    /**
+     * 思考增量：DeepSeek 系叫 {@code reasoning_content}，部分网关叫 {@code reasoning}。
+     *
+     * <p>两者都只在 {@code delta} 里出现；个别非流式回包放在 {@code message} 里，一并兼容。</p>
+     */
+    private String reasoningText(JsonNode root) {
+        JsonNode choice = root.path("choices").path(0);
+        for (JsonNode holder : new JsonNode[]{choice.path("delta"), choice.path("message")}) {
+            for (String field : new String[]{"reasoning_content", "reasoning"}) {
+                JsonNode node = holder.path(field);
+                if (node.isTextual() && !node.asText().isEmpty()) {
+                    return node.asText();
+                }
+            }
+        }
+        return null;
     }
 
     /** 增量可能在 {@code delta.content}，也可能整段躺在 {@code message.content}（非流式回包）。 */

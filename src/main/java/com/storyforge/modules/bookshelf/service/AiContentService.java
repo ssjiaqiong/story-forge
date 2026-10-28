@@ -135,6 +135,16 @@ public class AiContentService {
 
         /** 一个增量（可能含换行，前端累加即可，不要按行渲染）。 */
         void onDelta(String text);
+
+        /**
+         * 推理模型的思考增量。
+         *
+         * <p>推理模型会先花几十秒「想」，这段时间正文一个字都不会来；把思考文本推出去，
+         * 前端才不会看上去像卡死。<b>它只用于展示进度，绝不能并入正文</b>，所以默认空实现，
+         * 只有在意进度的调用方（SSE）才覆盖。</p>
+         */
+        default void onThinking(String text) {
+        }
     }
 
     /**
@@ -182,7 +192,7 @@ public class AiContentService {
         GenContext ctx = prepare(chapterId, request, listener);
         ChatStreamResult streamed = aiUsageService.chatStream(AiScene.BODY_GEN, ctx.endpoint(),
                 List.of(ChatMessage.system(ctx.systemPrompt()), ChatMessage.user(ctx.userPrompt())),
-                listener::onDelta);
+                listener::onDelta, listener::onThinking);
         if (!streamed.empty()) {
             return persist(ctx, streamed.content(), streamed.model(), ChapterVersionEntity.SOURCE_AI_BODY);
         }

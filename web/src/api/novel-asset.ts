@@ -555,6 +555,13 @@ export interface ContentStreamHandlers {
   onMeta?: (meta: ContentStreamMeta) => void
   /** 一个增量；可能含换行，累加即可，不要按行渲染 */
   onDelta?: (text: string) => void
+  /**
+   * 推理模型的思考增量。
+   *
+   * 推理模型会先「想」几十秒才吐正文，这段时间只有 thinking 事件。它只是进度展示，
+   * 不能拼进正文；调用方收到后应显示在独立区域，正文开始后收起。
+   */
+  onThinking?: (text: string) => void
   /** 由调用方在 fetch 结束后自行取返回值，这里不重复回调 */
   signal?: AbortSignal
 }
@@ -649,6 +656,13 @@ export async function generateContentStream(
       const text = typeof parsed.text === 'string' ? parsed.text : ''
       if (text) {
         handlers.onDelta?.(text)
+      }
+      return
+    }
+    if (event === 'thinking') {
+      const text = typeof parsed.text === 'string' ? parsed.text : ''
+      if (text) {
+        handlers.onThinking?.(text)
       }
       return
     }

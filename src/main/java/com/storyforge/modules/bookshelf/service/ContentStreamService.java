@@ -22,6 +22,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -31,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>事件序列（{@code data} 全是 JSON）：</p>
  * <ol>
  *   <li>{@code meta} —— 检索完成、正文开始写之前，带模型、目标字数、参考资料；</li>
+ *   <li>{@code thinking} —— 推理模型的思考增量 {@code {"text":"…"}}，只作进度展示，不是正文；</li>
  *   <li>{@code delta} —— 每个增量 {@code {"text":"…"}}；</li>
  *   <li>{@code done} —— 落库与档案补建都完成，载荷与同步接口的返回体完全一致；</li>
  *   <li>{@code error} —— {@code {code, message}}。</li>
@@ -51,6 +55,8 @@ public class ContentStreamService {
 
     /** 单条流最长挂 10 分钟：正文本身 5 分钟封顶，剩下的留给档案补建。 */
     private static final long EMITTER_TIMEOUT_MS = 600_000L;
+    /** 心跳间隔：必须小于各层网关的空闲超时（nginx 默认 60s，云厂商 LB 常见 60~120s）。 */
+    private static final long HEARTBEAT_SECONDS = 15L;
     /** 事件用 UTF-8 写：SSE 默认按 UTF-8 解码，这里显式声明避免中文乱码 */
     private static final MediaType UTF8_TEXT = new MediaType("text", "plain", StandardCharsets.UTF_8);
 
@@ -69,9 +75,23 @@ public class ContentStreamService {
         return thread;
     });
 
+    /**
+     * 心跳线程。
+     *
+     * <p>推理模型可能先想 60~120 秒，期间一帧都没有；浏览器 / nginx / 手机网络都可能把
+     * 长时间静默的连接判死。每 {@link #HEARTBEAT_SECONDS} 秒发一个 SSE 注释帧（{@code : ping}），
+     * 客户端解析时会直接忽略，但链路被持续「喂活」。</p>
+     */
+    private final ScheduledExecutorService heartbeat = Executors.newScheduledThreadPool(1, runnable -> {
+        Thread thread = new Thread(runnable, "content-stream-heartbeat");
+        thread.setDaemon(true);
+        return thread;
+    });
+
     @PreDestroy
     public void shutdown() {
         executor.shutdownNow();
+        heartbeat.shutdownNow();
     }
 
     /**
@@ -98,9 +118,11 @@ public class ContentStreamService {
             emitter.complete();
         });
 
+        ScheduledFuture<?> ticker = startHeartbeat(emitter, closed);
         try {
-            executor.submit(() -> run(chapterId, request, context, emitter, closed));
+            executor.submit(() -> run(chapterId, request, context, emitter, closed, ticker));
         } catch (RejectedExecutionException ex) {
+            ticker.cancel(false);
             running.remove(chapterId, context.userId());
             log.warn("[content-stream] 线程池已满 chapterId={}", chapterId);
             throw BizException.of(ErrorCode.AI_CALL_FAILED, "当前生成任务过多，请等前面的章节写完再试");
@@ -113,13 +135,34 @@ public class ContentStreamService {
         return running.size();
     }
 
+    /**
+     * 起一条心跳：每 {@link #HEARTBEAT_SECONDS} 秒发一个注释帧。
+     *
+     * <p>注释帧（{@code : ping}）是 SSE 规范里的合法内容，浏览器解析时直接忽略，
+     * 因此不影响前端的帧解析逻辑，只用来把连接「喂活」。</p>
+     */
+    private ScheduledFuture<?> startHeartbeat(SseEmitter emitter, AtomicBoolean closed) {
+        return heartbeat.scheduleAtFixedRate(() -> {
+            if (closed.get()) {
+                return;
+            }
+            try {
+                emitter.send(SseEmitter.event().comment("ping"));
+            } catch (Exception ex) {
+                // 发送失败说明客户端已经走了：置位后由主流程的 send 感知并收尾
+                closed.set(true);
+            }
+        }, HEARTBEAT_SECONDS, HEARTBEAT_SECONDS, TimeUnit.SECONDS);
+    }
+
     /* ------------------------------------------------------------------ */
 
     private void run(Long chapterId,
                      ContentGenerateRequest request,
                      UserContext context,
                      SseEmitter emitter,
-                     AtomicBoolean closed) {
+                     AtomicBoolean closed,
+                     ScheduledFuture<?> ticker) {
         UserContextHolder.set(context);
         long startedAt = System.currentTimeMillis();
         try {
@@ -139,6 +182,13 @@ public class ContentStreamService {
                         public void onDelta(String text) {
                             send(emitter, closed, "delta", Map.of("text", text));
                         }
+
+                        @Override
+                        public void onThinking(String text) {
+                            // 推理模型的思考流：推理阶段先把这段推出去，前端显示「思考中」，
+                            // 结束前正文一个字都没有也不会被当成卡死
+                            send(emitter, closed, "thinking", Map.of("text", text));
+                        }
                     });
             send(emitter, closed, "done", result);
             emitter.complete();
@@ -156,6 +206,7 @@ public class ContentStreamService {
                     ? "AI 生成失败，请重试" : ex.getMessage();
             pushError(emitter, closed, chapterId, ErrorCode.AI_CALL_FAILED.getCode(), message, ex);
         } finally {
+            ticker.cancel(false);
             running.remove(chapterId, context.userId());
             UserContextHolder.clear();
         }
