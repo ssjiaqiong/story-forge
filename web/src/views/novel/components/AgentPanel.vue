@@ -11,38 +11,6 @@
     <div class="agent-shell">
       <div ref="resizeHandle" class="resize-handle" @mousedown.prevent="onResizeStart" />
       <div class="agent-main">
-      <div v-if="plan" class="aplan" :class="`aplan-${plan.status.toLowerCase()}`">
-        <div class="aplan-head">
-          <span class="aplan-title">任务计划</span>
-          <span class="aplan-status">{{ planStatusLabel(plan.status) }}</span>
-          <span class="aplan-spacer" />
-          <el-button v-if="planRunning" size="small" text @click="onPausePlan">暂停</el-button>
-          <el-button v-if="planCanResume" size="small" text type="primary" @click="onResumePlan">继续</el-button>
-          <el-button v-if="planRunning || planCanResume" size="small" text type="danger" @click="onCancelPlan">
-            取消
-          </el-button>
-        </div>
-        <div class="aplan-goal">{{ plan.goal }}</div>
-        <div class="aplan-progress">
-          <div class="aplan-bar"><div class="aplan-bar-fill" :style="{ width: `${plan.percent}%` }" /></div>
-          <span class="aplan-count">
-            {{ plan.stepTotal ? `${plan.stepDone} / ${plan.stepTotal} 步 · ${plan.percent}%` : '拆解中…' }}
-          </span>
-        </div>
-        <div v-if="plan.pausedReason" class="aplan-note">{{ plan.pausedReason }}</div>
-        <div v-if="plan.errorMessage" class="aplan-note is-error">{{ plan.errorMessage }}</div>
-        <ol v-if="plan.steps.length" class="aplan-steps">
-          <li v-for="step in plan.steps" :key="step.id" class="aplan-step" :class="`is-${step.status.toLowerCase()}`">
-            <span class="aplan-mark">{{ stepMark(step.status) }}</span>
-            <div class="aplan-step-body">
-              <div class="aplan-step-title">{{ step.stepNo }}. {{ step.title }}</div>
-              <div v-if="step.reply" class="aplan-step-reply">{{ step.reply }}</div>
-              <div v-if="step.errorMessage" class="aplan-step-error">{{ step.errorMessage }}</div>
-            </div>
-          </li>
-        </ol>
-      </div>
-
       <div ref="scrollRef" v-loading="loading" class="agent-list">
         <div v-if="!loading && messages.length === 0" class="agent-empty">
           <div class="agent-empty-mark">助手</div>
@@ -82,6 +50,57 @@
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- 任务计划卡：跟在对话末尾，随消息一起滚动；整卡可折叠，单步可展开详情 -->
+        <div
+          v-if="plan"
+          class="aplan"
+          :class="[`aplan-${plan.status.toLowerCase()}`, { 'is-collapsed': !planOpen }]"
+        >
+          <div class="aplan-head" @click="togglePlan">
+            <span class="aplan-caret">{{ planOpen ? '▾' : '▸' }}</span>
+            <span class="aplan-title">任务计划</span>
+            <span class="aplan-status">{{ planStatusLabel(plan.status) }}</span>
+            <span class="aplan-count">
+              {{ plan.stepTotal ? `${plan.stepDone}/${plan.stepTotal} 步 · ${plan.percent}%` : '拆解中…' }}
+            </span>
+            <span class="aplan-spacer" />
+            <el-button v-if="planRunning" size="small" text @click.stop="onPausePlan">暂停</el-button>
+            <el-button v-if="planCanResume" size="small" text type="primary" @click.stop="onResumePlan">
+              继续
+            </el-button>
+            <el-button v-if="planRunning || planCanResume" size="small" text type="danger" @click.stop="onCancelPlan">
+              取消
+            </el-button>
+          </div>
+          <div class="aplan-progress">
+            <div class="aplan-bar"><div class="aplan-bar-fill" :style="{ width: `${plan.percent}%` }" /></div>
+          </div>
+          <template v-if="planOpen">
+            <div class="aplan-goal">{{ plan.goal }}</div>
+            <div v-if="plan.pausedReason" class="aplan-note">{{ plan.pausedReason }}</div>
+            <div v-if="plan.errorMessage" class="aplan-note is-error">{{ plan.errorMessage }}</div>
+            <ol v-if="plan.steps.length" class="aplan-steps">
+              <li
+                v-for="step in plan.steps"
+                :key="step.id"
+                class="aplan-step"
+                :class="[`is-${step.status.toLowerCase()}`, { 'is-open': !!openSteps[step.id] }]"
+                @click="toggleStep(step.id)"
+              >
+                <span class="aplan-mark">{{ stepMark(step.status) }}</span>
+                <div class="aplan-step-body">
+                  <div class="aplan-step-title">
+                    <span class="aplan-step-text">{{ step.stepNo }}. {{ step.title }}</span>
+                    <span v-if="step.reply" class="aplan-step-hint">{{ openSteps[step.id] ? '收起' : '详情' }}</span>
+                  </div>
+                  <div v-if="step.reply" class="aplan-step-reply">{{ step.reply }}</div>
+                  <div v-if="step.errorMessage" class="aplan-step-error">{{ step.errorMessage }}</div>
+                </div>
+              </li>
+            </ol>
+          </template>
         </div>
 
         <div v-if="sending" class="amsg from-ai">
@@ -204,6 +223,42 @@ let planTimer: number | null = null
 
 const planRunning = computed(() => plan.value?.status === 'RUNNING' || plan.value?.status === 'PLANNING')
 const planCanResume = computed(() => plan.value?.status === 'PAUSED' || plan.value?.status === 'FAILED')
+
+/** 整卡展开态：进行中默认展开（要看得见每一步在做什么），收尾后自动收成一行摘要。 */
+const planOpen = ref(true)
+/** 用户手动点过折叠后，就不再跟着状态自动开合 */
+const planOpenTouched = ref(false)
+/** 单步详情展开态：默认只留一行标题，长回复点开再看 */
+const openSteps = ref<Record<string, boolean>>({})
+
+watch(
+  () => plan.value?.id,
+  () => {
+    // 换了一个新计划：整卡展开、步骤详情全部收起
+    planOpen.value = true
+    planOpenTouched.value = false
+    openSteps.value = {}
+  }
+)
+
+watch(
+  () => plan.value?.status,
+  (status) => {
+    if (!status || planOpenTouched.value) {
+      return
+    }
+    planOpen.value = status === 'PLANNING' || status === 'RUNNING' || status === 'PAUSED'
+  }
+)
+
+function togglePlan() {
+  planOpenTouched.value = true
+  planOpen.value = !planOpen.value
+}
+
+function toggleStep(id: string) {
+  openSteps.value[id] = !openSteps.value[id]
+}
 
 // 抽屉可拖拽拉宽
 const drawerSize = ref('460px')
@@ -626,11 +681,10 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
-/* ── 任务计划卡：规划 / 执行 / 进度 ── */
+/* ── 任务计划卡：跟在对话末尾，随消息滚动（不再浮在列表上方） ── */
 .aplan {
-  flex: none;
-  margin: 8px 6px 0;
-  padding: 10px 12px;
+  margin: 10px 0 6px;
+  padding: 8px 10px 10px;
   border: 1px solid var(--sf-border);
   border-left: 3px solid var(--sf-brand);
   border-radius: 8px;
@@ -653,7 +707,17 @@ onUnmounted(() => {
 .aplan-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.aplan-caret {
+  flex: none;
+  width: 12px;
+  color: var(--sf-text-muted);
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 .aplan-title {
@@ -706,7 +770,7 @@ onUnmounted(() => {
 }
 
 .aplan-progress {
-  margin-top: 8px;
+  margin-top: 6px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -761,15 +825,20 @@ onUnmounted(() => {
   margin: 8px 0 0;
   padding: 0;
   list-style: none;
-  max-height: 32vh;
-  overflow-y: auto;
 }
 
 .aplan-step {
   display: flex;
   gap: 7px;
-  padding: 4px 0;
+  padding: 5px 4px;
   border-top: 1px dashed var(--sf-border);
+  border-radius: 0 0 6px 6px;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.aplan-step:hover {
+  background: rgba(59, 110, 246, 0.05);
 }
 
 .aplan-step:first-child {
@@ -803,10 +872,24 @@ onUnmounted(() => {
 }
 
 .aplan-step-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 12px;
   line-height: 1.7;
   color: var(--sf-text-regular);
   word-break: break-word;
+}
+
+.aplan-step-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.aplan-step-hint {
+  flex: none;
+  font-size: 11px;
+  color: var(--sf-brand);
 }
 
 .aplan-step.is-done .aplan-step-title {
@@ -824,9 +907,18 @@ onUnmounted(() => {
   line-height: 1.6;
   color: var(--sf-text-muted);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.aplan-step.is-open .aplan-step-reply {
+  display: block;
+  -webkit-line-clamp: unset;
+  max-height: 40vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .aplan-step-error {
