@@ -61,6 +61,8 @@ public class AiOutlineService {
     private static final int MAX_CHAPTERS = 20;
     private static final int MAX_EXISTING_DETAIL = 12;
     private static final int MAX_EXISTING_TITLES = 60;
+    /** 关联总纲时，最多把这条总纲下已排的几条大纲带进提示词 */
+    private static final int MAX_MASTER_CONTEXT = 24;
     private static final int MAX_CHARACTERS_IN_PROMPT = 30;
     private static final int MAX_RELATIONS_IN_PROMPT = 40;
     private static final int MAX_EVENTS_IN_PROMPT = 40;
@@ -128,8 +130,13 @@ public class AiOutlineService {
         SearchBundleVO search = search(novelId, detail, requirement, request, endpoint, noUnusedEvent);
         List<CharacterVO> forced = resolveForced(detail.getCharacters(), request);
         MasterOutlineEntity masterOutline = resolveMasterOutline(novelId, request);
+        // 这条总纲下已经排过的大纲：模型要接着它们往后写，并判断这一段是否已经讲完
+        List<ChapterVO> masterChapters = masterOutline == null ? List.of()
+                : existing.stream()
+                .filter(item -> masterOutline.getId().equals(item.masterOutlineId()))
+                .toList();
         String userPrompt = buildPrompt(detail, existing, events, relations, forced,
-                requirement, count, request, search, masterOutline,
+                requirement, count, request, search, masterOutline, masterChapters,
                 promptTemplateService.usedVariables(AiScene.OUTLINE_GEN));
         java.util.Map<String, String> promptVars = new java.util.LinkedHashMap<>();
         var novelInfo = detail.getNovel();
@@ -161,7 +168,9 @@ public class AiOutlineService {
         return persist(novelId, existing, detail.getCharacters(), events, forced, request, root, reply.model(),
                 System.currentTimeMillis() - startedAt, search, masterOutline,
                 existingNames(assetService.listItems(novelId).stream().map(ItemVO::name).toList()),
-                existingNames(factionService.list(novelId).stream().map(FactionVO::name).toList()));
+                existingNames(factionService.list(novelId).stream().map(FactionVO::name).toList()),
+                masterOutline == null ? null : boolOf(root, "masterFinished"),
+                masterOutline == null ? null : textOf(root, "masterReason"));
     }
 
     /** 档案里已有的名字：补建时用来去重，避免同一个人物 / 道具 / 组织建两份。 */
@@ -225,7 +234,9 @@ public class AiOutlineService {
                                             SearchBundleVO search,
                                             MasterOutlineEntity masterOutline,
                                             Set<String> existingItemNames,
-                                            Set<String> existingFactionNames) {
+                                            Set<String> existingFactionNames,
+                                            Boolean masterFinished,
+                                            String masterReason) {
         int count = request != null && request.getChapterCount() != null
                 ? Math.min(MAX_CHAPTERS, Math.max(1, request.getChapterCount()))
                 : Math.min(MAX_CHAPTERS, Math.max(1, root.path("chapters").size()));
@@ -327,14 +338,15 @@ public class AiOutlineService {
             throw BizException.of(ErrorCode.OUTLINE_GENERATE_EMPTY);
         }
         log.info("[ai-outline] generated novelId={} chapters={} links={} skipped={} volume={} model={} "
-                        + "newCharacters={} newItems={} newFactions={} newEvents={} search={}({})",
+                        + "newCharacters={} newItems={} newFactions={} newEvents={} search={}({}) masterFinished={}",
                 novelId, created.size(),
                 created.stream().mapToInt(item -> item.participants().size() + item.events().size()).sum(),
                 skipped.size(), volumeNo, model,
                 newCharacters.size(), newItems.size(), newFactions.size(), newEvents.size(),
-                search != null && search.used(), search == null ? null : search.provider());
+                search != null && search.used(), search == null ? null : search.provider(),
+                masterFinished);
         return new OutlineGenerateResultVO(created, skipped, model, latencyMs, search,
-                newCharacters, newItems, newFactions, newEvents);
+                newCharacters, newItems, newFactions, newEvents, masterFinished, masterReason);
     }
 
     /** 指定人物优先，再补模型给出的人物；总数不超过单章上限。 */
@@ -459,6 +471,7 @@ public class AiOutlineService {
                                OutlineGenerateRequest request,
                                SearchBundleVO search,
                                MasterOutlineEntity masterOutline,
+                               List<ChapterVO> masterChapters,
                                java.util.Set<String> used) {
         NovelVO novel = detail.getNovel();
         StringBuilder builder = new StringBuilder();
@@ -467,8 +480,41 @@ public class AiOutlineService {
             builder.append("【本批总纲】（硬约束：本章节大纲只能写这一段剧情，不得脱离或提前跳到后面）\n");
             builder.append("总纲标题：").append(masterOutline.getTitle()).append("\n");
             builder.append("总纲内容：").append(truncate(masterOutline.getContent(), 1200)).append("\n");
-            builder.append("要求：本批每章都在这条总纲的范围内推进，按顺序拆解它的开局局面 → 主要矛盾 → 关键转折 → 结果；")
-                    .append("不要引入总纲之外的重大转折，也不要提前写完总纲之后的内容。\n\n");
+            int planned = masterOutline.getPlannedOutlines() == null ? 0 : masterOutline.getPlannedOutlines();
+            if (planned > 0) {
+                builder.append("规划时估计这一段大约 ").append(planned)
+                        .append(" 条章节大纲（只是估计，不是上限：故事没讲完就继续往后排，讲完了就该收）。\n");
+            }
+            if (masterChapters.isEmpty()) {
+                builder.append("这一段还没有任何章节大纲，本批从它的开局写起。\n");
+            } else {
+                builder.append("这一段已经排了 ").append(masterChapters.size()).append(" 条大纲，按顺序是：\n");
+                int from = Math.max(0, masterChapters.size() - MAX_MASTER_CONTEXT);
+                if (from > 0) {
+                    builder.append("（更早的略）\n");
+                }
+                for (int i = from; i < masterChapters.size(); i++) {
+                    ChapterVO chapter = masterChapters.get(i);
+                    builder.append("- 第 ").append(chapter.chapterNo()).append(" 章 ")
+                            .append(truncate(chapter.title(), 40));
+                    if (hasText(chapter.summary())) {
+                        builder.append("：").append(truncate(chapter.summary(), 120));
+                    }
+                    builder.append("\n");
+                }
+                builder.append("本批必须紧接上面最后一条往下写：它们已经发生的事不能再重演一遍，"
+                        + "也不要回头补写它们之前的情节。\n");
+            }
+            builder.append("""
+                    要求：本批每章都在这条总纲的范围内推进，按顺序拆解它的开局局面 → 主要矛盾 → 关键转折 → 结果；
+                    不要引入总纲之外的重大转折，也不要提前写完总纲之后的内容。
+                    另外要判断：本批大纲写完之后，这条总纲里的剧情是不是已经全部讲完（矛盾解决了、局面已经变成总纲描述的结束状态）。
+                    - 已经讲完 → masterFinished 填 true，本批就写成收束的样子，不要再硬加新波折；
+                    - 还差得远 → masterFinished 填 false，本批只推进中间几步，留下后续空间；
+                    - 如果总纲里有些事一句话就带过了，不要为了凑数把它拆成好几章。
+                    masterReason 用一句话说明为什么这么判断，20 字以内。
+
+                    """);
         }
         builder.append("【作品信息】\n");
         builder.append("书名：").append(novel.getTitle()).append("\n");
@@ -742,7 +788,9 @@ public class AiOutlineService {
                         }
                       ]
                     }
-                  ]
+                  ],
+                  "masterFinished": "true|false：本批写完后，本条总纲的剧情是否已经全部讲完",
+                  "masterReason": "为什么这么判断，20 字内"
                 }
 
                 【硬性要求】
@@ -753,6 +801,7 @@ public class AiOutlineService {
                 5. characters 只写姓名本身，events / newEvents 只写标题本身，不要加身份说明或书名号。
                 6. 不要为了凑数补建档案：没有需要就分别给空数组 []。
                 7. 所有字段值单行纯文本，不要出现英文双引号与换行，引用用「」。
+                8. 本次任务带了总纲时，masterFinished 必须明确给出 true 或 false，不能空着或写「不确定」。
                 """);
         builder.append("\n").append(PromptKit.JSON_CONTRACT);
         return builder.toString();
@@ -878,6 +927,37 @@ public class AiOutlineService {
         }
         String text = value.asText("").trim();
         return text.isEmpty() ? null : text;
+    }
+
+    /**
+     * 读布尔值；模型有时写成字符串「true」「是」「讲完了」，都要认。
+     *
+     * @return 判断不出来时返回 {@code null}（调用方按「没判断」处理，不能默认讲完）
+     */
+    private Boolean boolOf(JsonNode node, String field) {
+        JsonNode value = node == null ? null : node.path(field);
+        if (value == null || value.isMissingNode() || value.isNull()) {
+            return null;
+        }
+        if (value.isBoolean()) {
+            return value.asBoolean();
+        }
+        if (value.isNumber()) {
+            return value.asInt() != 0;
+        }
+        String text = value.asText("").trim().toLowerCase(java.util.Locale.ROOT);
+        if (text.isEmpty()) {
+            return null;
+        }
+        if ("true".equals(text) || "yes".equals(text) || "1".equals(text)
+                || "是".equals(text) || "已讲完".equals(text) || "讲完了".equals(text) || "完成".equals(text)) {
+            return Boolean.TRUE;
+        }
+        if ("false".equals(text) || "no".equals(text) || "0".equals(text)
+                || "否".equals(text) || "未讲完".equals(text) || "没讲完".equals(text) || "未完成".equals(text)) {
+            return Boolean.FALSE;
+        }
+        return null;
     }
 
     /** 读取字符串数组；兼容模型把单个字符串写成逗号分隔的情况。 */

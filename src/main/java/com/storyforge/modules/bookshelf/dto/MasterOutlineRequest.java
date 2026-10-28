@@ -1,6 +1,8 @@
 package com.storyforge.modules.bookshelf.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -20,4 +22,12 @@ public class MasterOutlineRequest {
 
     @Schema(description = "排序号；留空时排到最后")
     private Integer sortNo;
+
+    @Schema(description = "预计大纲数量，参考值不是硬上限；留空表示不修改")
+    @Min(value = 0, message = "预计大纲数量不能为负数")
+    private Integer plannedOutlines;
+
+    @Schema(description = "推进状态：PENDING 未开始 / RUNNING 进行中 / DONE 已完成；留空表示不修改")
+    @Pattern(regexp = "PENDING|RUNNING|DONE|pending|running|done", message = "状态只能是 PENDING / RUNNING / DONE")
+    private String status;
 }

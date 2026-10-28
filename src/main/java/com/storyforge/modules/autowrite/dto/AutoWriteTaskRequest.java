@@ -26,8 +26,8 @@ public class AutoWriteTaskRequest {
     @Schema(description = "完结口径：CHAPTERS 写到目标章数 / UNTIL_END 直到完结", example = "CHAPTERS")
     private String endMode;
 
-    @Schema(description = "CHAPTERS 模式的目标章数")
-    @Min(value = 1, message = "目标章数至少为 1")
+    @Schema(description = "CHAPTERS 模式的目标章数；UNTIL_END 模式可传 0")
+    @Min(value = 0, message = "目标章数不能为负数")
     private Integer endChapterNo;
 
     @Schema(description = "体检硬伤（P0）熔断阈值，默认 5")

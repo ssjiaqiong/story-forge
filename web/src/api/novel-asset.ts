@@ -367,6 +367,10 @@ export interface MasterOutlineVO {
   content?: string
   /** 已关联的章节大纲数量 */
   chapterCount: number
+  /** 推进状态：PENDING 未开始 / RUNNING 进行中 / DONE 已完成 */
+  status?: 'PENDING' | 'RUNNING' | 'DONE'
+  /** 预计大纲数量，只作参考不是硬上限；0 表示未规划 */
+  plannedOutlines?: number
   updatedAt?: string
 }
 
@@ -374,6 +378,8 @@ export interface MasterOutlinePayload {
   title?: string
   content?: string
   sortNo?: number
+  plannedOutlines?: number
+  status?: 'PENDING' | 'RUNNING' | 'DONE'
 }
 
 export interface MasterOutlineGeneratePayload {

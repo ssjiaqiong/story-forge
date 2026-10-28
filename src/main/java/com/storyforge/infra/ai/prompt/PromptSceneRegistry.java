@@ -266,7 +266,7 @@ public class PromptSceneRegistry {
 
                 """ + PromptKit.TITLES + "\n" + PromptKit.ANTI_MECHANICAL,
                 jsonContract("""
-                        {"outlines": [{"title": "这一段的核心事件，取具体物件、动作或台词", "content": "200~400 字：局面 → 争夺 → 转折 → 结束时的结果"}]}"""),
+                        {"outlines": [{"title": "这一段的核心事件，取具体物件、动作或台词", "content": "200~400 字：局面 → 争夺 → 转折 → 结束时的结果", "plannedOutlines": 12}]}"""),
                 MASTER_OUTLINE_VARIABLES,
                 "总纲生成：决定全书剧情如何分段推进，JSON 字段由系统锁定。模板里引用世界观、作者要求这类上下文变量后，user 消息里同名段落不再重复注入。");
 

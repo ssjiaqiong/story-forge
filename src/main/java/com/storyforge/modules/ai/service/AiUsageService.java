@@ -58,7 +58,7 @@ public class AiUsageService {
             }
         }
         log.info("[ai] 请求开始 scene={} model={} baseUrl={} messages={} chars={} temperature={} maxTokens={}",
-                scene, model, endpoint == null ? null : endpoint.baseUrl(), messageCount, messageChars,
+                sceneLabel(scene), model, endpoint == null ? null : endpoint.baseUrl(), messageCount, messageChars,
                 endpoint == null ? null : endpoint.temperature(), endpoint == null ? null : endpoint.maxTokens());
 
         long startedAt = System.currentTimeMillis();
@@ -69,7 +69,7 @@ public class AiUsageService {
                 save(scene, endpoint, result.model(), result.promptTokens(), result.completionTokens(),
                         (int) Math.min(result.latencyMs(), Integer.MAX_VALUE), null);
                 log.info("[ai] 请求完成 scene={} model={} latency={}ms tokens=({},{}) 第{}次成功",
-                        scene, result.model(), result.latencyMs(), result.promptTokens(),
+                        sceneLabel(scene), result.model(), result.latencyMs(), result.promptTokens(),
                         result.completionTokens(), attempt);
                 return result;
             } catch (RuntimeException ex) {
@@ -78,11 +78,11 @@ public class AiUsageService {
                 save(scene, endpoint, model, 0, 0,
                         (int) Math.min(System.currentTimeMillis() - startedAt, Integer.MAX_VALUE), reason);
                 if (!isRetryable(reason) || attempt >= MAX_ATTEMPTS) {
-                    log.error("[ai] 调用失败 scene={} model={} 原因={} 已尝试{}次", scene, model, reason, attempt);
+                    log.error("[ai] 调用失败 scene={} model={} 原因={} 已尝试{}次", sceneLabel(scene), model, reason, attempt);
                     throw ex;
                 }
                 log.warn("[ai] 调用失败，自动重试 scene={} model={} 第{}次失败 原因={} 剩余重试{}次",
-                        scene, model, attempt, reason, MAX_ATTEMPTS - attempt);
+                        sceneLabel(scene), model, attempt, reason, MAX_ATTEMPTS - attempt);
                 sleepQuietly(attempt * 1000L);
             }
         }
@@ -134,7 +134,7 @@ public class AiUsageService {
             }
         }
         log.info("[ai] 流式请求开始 scene={} model={} baseUrl={} messages={} chars={} temperature={} maxTokens={}",
-                scene, model, endpoint == null ? null : endpoint.baseUrl(), messageCount, messageChars,
+                sceneLabel(scene), model, endpoint == null ? null : endpoint.baseUrl(), messageCount, messageChars,
                 endpoint == null ? null : endpoint.temperature(), endpoint == null ? null : endpoint.maxTokens());
 
         AtomicBoolean emitted = new AtomicBoolean(false);
@@ -156,7 +156,7 @@ public class AiUsageService {
                 save(scene, endpoint, result.model(), result.promptTokens(), result.completionTokens(),
                         (int) Math.min(result.latencyMs(), Integer.MAX_VALUE), null);
                 log.info("[ai] 流式请求完成 scene={} model={} latency={}ms 首字={}ms 首思考={}ms 增量={} 字={} 思考字={} tokens=({},{}) 第{}次",
-                        scene, result.model(), result.latencyMs(), result.firstTokenMs(), result.firstReasoningMs(),
+                        sceneLabel(scene), result.model(), result.latencyMs(), result.firstTokenMs(), result.firstReasoningMs(),
                         result.deltaCount(), result.content() == null ? 0 : result.content().length(),
                         result.reasoning() == null ? 0 : result.reasoning().length(),
                         result.promptTokens(), result.completionTokens(), attempt);
@@ -165,7 +165,7 @@ public class AiUsageService {
                 int latency = (int) Math.min(System.currentTimeMillis() - startedAt, Integer.MAX_VALUE);
                 save(scene, endpoint, model, 0, 0, latency, "客户端已停止生成");
                 log.info("[ai] 流式请求被客户端中止 scene={} model={} 已用={}ms 首字前={}",
-                        scene, model, latency, !emitted.get());
+                        sceneLabel(scene), model, latency, !emitted.get());
                 throw aborted;
             } catch (RuntimeException ex) {
                 failure = ex;
@@ -173,15 +173,15 @@ public class AiUsageService {
                 save(scene, endpoint, model, 0, 0,
                         (int) Math.min(System.currentTimeMillis() - startedAt, Integer.MAX_VALUE), reason);
                 if (emitted.get()) {
-                    log.error("[ai] 流式中途失败，已输出部分内容，不再重试 scene={} model={} 原因={}", scene, model, reason);
+                    log.error("[ai] 流式中途失败，已输出部分内容，不再重试 scene={} model={} 原因={}", sceneLabel(scene), model, reason);
                     throw ex;
                 }
                 if (!isRetryable(reason) || attempt >= MAX_ATTEMPTS) {
-                    log.error("[ai] 流式调用失败 scene={} model={} 原因={} 已尝试{}次", scene, model, reason, attempt);
+                    log.error("[ai] 流式调用失败 scene={} model={} 原因={} 已尝试{}次", sceneLabel(scene), model, reason, attempt);
                     throw ex;
                 }
                 log.warn("[ai] 流式调用失败，自动重试 scene={} model={} 第{}次失败 原因={} 剩余重试{}次",
-                        scene, model, attempt, reason, MAX_ATTEMPTS - attempt);
+                        sceneLabel(scene), model, attempt, reason, MAX_ATTEMPTS - attempt);
                 sleepQuietly(attempt * 1000L);
             }
         }
@@ -194,6 +194,16 @@ public class AiUsageService {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * 日志里怎么显示这次调用「是干什么的」：场景码 + 中文功能名，例如 {@code BODY_GEN(正文生成)}。
+     *
+     * <p>场景码是给代码看的，排查线上问题时真正要回答的是「哪项功能在烧 token」，
+     * 所以每条调用日志都带上中文名。</p>
+     */
+    private String sceneLabel(AiScene scene) {
+        return scene == null ? "-" : scene.name() + "(" + scene.getLabel() + ")";
     }
 
     /**
@@ -233,7 +243,7 @@ public class AiUsageService {
             entity.setErrorMessage(error == null ? null : truncate(error));
             recorder.save(entity);
         } catch (RuntimeException ex) {
-            log.warn("[ai-usage] record failed scene={} userId={}: {}", scene, userId, ex.toString());
+            log.warn("[ai-usage] record failed scene={} userId={}: {}", sceneLabel(scene), userId, ex.toString());
         }
     }
 

@@ -22,6 +22,13 @@ import java.time.LocalDateTime;
 @TableName("t_master_outline")
 public class MasterOutlineEntity implements Serializable {
 
+    /** 未开始：还没有为它排过章节大纲 */
+    public static final String STATUS_PENDING = "PENDING";
+    /** 进行中：已经在为它排大纲，或已排了大纲但故事还没讲完 */
+    public static final String STATUS_RUNNING = "RUNNING";
+    /** 已完成：这一段故事已经讲完，可以开下一条总纲 */
+    public static final String STATUS_DONE = "DONE";
+
     @TableId(type = IdType.ASSIGN_ID)
     private Long id;
 
@@ -36,6 +43,17 @@ public class MasterOutlineEntity implements Serializable {
 
     /** 剧情走向描述 */
     private String content;
+
+    /**
+     * 推进状态：{@link #STATUS_PENDING} 未开始 / {@link #STATUS_RUNNING} 进行中 / {@link #STATUS_DONE} 已完成。
+     *
+     * <p>总纲是一段一段接着讲的：当前总纲没有讲完（未标 DONE），下一条不能开始。
+     * 自动写书按 {@code sort_no} 升序找第一条非 DONE 的总纲推进。</p>
+     */
+    private String status;
+
+    /** 预计需要多少条章节大纲；只作参考，不是硬上限（0 表示未规划） */
+    private Integer plannedOutlines;
 
     @TableLogic
     private Integer deleted;

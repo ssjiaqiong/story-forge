@@ -94,6 +94,9 @@ public class MasterOutlineService {
         entity.setTitle(request.getTitle().trim());
         entity.setContent(trimToNull(request.getContent()));
         entity.setSortNo(request.getSortNo() == null ? nextSortNo(novelId) : request.getSortNo());
+        entity.setStatus(MasterOutlineEntity.STATUS_PENDING);
+        entity.setPlannedOutlines(request.getPlannedOutlines() == null
+                ? 0 : Math.max(0, request.getPlannedOutlines()));
         entity.setDeleted(0);
         entity.setVersion(0);
         masterOutlineMapper.insert(entity);
@@ -120,6 +123,12 @@ public class MasterOutlineService {
         if (request.getSortNo() != null) {
             entity.setSortNo(request.getSortNo());
         }
+        if (request.getPlannedOutlines() != null) {
+            entity.setPlannedOutlines(Math.max(0, request.getPlannedOutlines()));
+        }
+        if (hasText(request.getStatus())) {
+            entity.setStatus(normalizeStatus(request.getStatus()));
+        }
         masterOutlineMapper.updateById(entity);
         return toVO(entity, chapterCounts(entity.getNovelId()).getOrDefault(id, 0));
     }
@@ -142,6 +151,40 @@ public class MasterOutlineService {
             throw BizException.of(ErrorCode.PARAM_INVALID, "总纲不存在");
         }
         return entity;
+    }
+
+    /** 按 {@code sort_no} 升序取全部总纲（自动写书按这个顺序一段一段推进）。 */
+    public List<MasterOutlineEntity> ordered(Long novelId) {
+        return entities(novelId);
+    }
+
+    /** 改推进状态；自动写书推进总纲时用。 */
+    public void markStatus(Long masterOutlineId, String status) {
+        String next = normalizeStatus(status);
+        masterOutlineMapper.update(null, Wrappers.<MasterOutlineEntity>lambdaUpdate()
+                .set(MasterOutlineEntity::getStatus, next)
+                .eq(MasterOutlineEntity::getId, masterOutlineId));
+        log.info("[master-outline] status changed id={} status={}", masterOutlineId, next);
+    }
+
+    /** 这条总纲下已经有多少条章节大纲。 */
+    public int chapterCountOf(Long masterOutlineId) {
+        Long count = chapterMapper.selectCount(Wrappers.<ChapterEntity>lambdaQuery()
+                .eq(ChapterEntity::getMasterOutlineId, masterOutlineId));
+        return count == null ? 0 : count.intValue();
+    }
+
+    private String normalizeStatus(String status) {
+        if (!hasText(status)) {
+            return MasterOutlineEntity.STATUS_PENDING;
+        }
+        String value = status.trim().toUpperCase(java.util.Locale.ROOT);
+        if (!MasterOutlineEntity.STATUS_PENDING.equals(value)
+                && !MasterOutlineEntity.STATUS_RUNNING.equals(value)
+                && !MasterOutlineEntity.STATUS_DONE.equals(value)) {
+            throw BizException.of(ErrorCode.PARAM_INVALID, "总纲状态只能是 PENDING / RUNNING / DONE");
+        }
+        return value;
     }
 
     /* ------------------------------------------------------------------ */
@@ -247,6 +290,8 @@ public class MasterOutlineService {
             entity.setTitle(truncate(title, 200));
             entity.setContent(content.trim());
             entity.setSortNo(++sortNo);
+            entity.setStatus(MasterOutlineEntity.STATUS_PENDING);
+            entity.setPlannedOutlines(plannedOutlinesOf(node));
             entity.setDeleted(0);
             entity.setVersion(0);
             masterOutlineMapper.insert(entity);
@@ -260,8 +305,7 @@ public class MasterOutlineService {
         return created;
     }
 
-    /** 资料是否充足：世界观 / 背景 / 核心冲突齐备，且至少 3 个角色。 */
-    private boolean isRich(NovelDetailVO detail) {
+    /** 资料是否充足：世界观 / 背景 / 核心冲突齐备，且至少 3 个角色。 */    private boolean isRich(NovelDetailVO detail) {
         if (detail == null) {
             return false;
         }
@@ -368,8 +412,21 @@ public class MasterOutlineService {
         if (!existing.isEmpty()) {
             builder.append("\n【已有总纲】（不要重复这些内容，接着往后规划）\n");
             for (MasterOutlineEntity item : existing) {
-                builder.append("- ").append(item.getTitle()).append("\n");
+                builder.append("- ").append(item.getTitle());
+                String status = hasText(item.getStatus()) ? item.getStatus() : MasterOutlineEntity.STATUS_PENDING;
+                if (MasterOutlineEntity.STATUS_DONE.equals(status)) {
+                    builder.append("［已讲完］");
+                } else if (MasterOutlineEntity.STATUS_RUNNING.equals(status)) {
+                    builder.append("［正在讲，大纲约 ")
+                            .append(item.getPlannedOutlines() == null ? 0 : item.getPlannedOutlines())
+                            .append(" 条］");
+                } else {
+                    builder.append("［还没开始］");
+                }
+                builder.append("\n");
             }
+            builder.append("新总纲要接在「已讲完 / 正在讲」的那一段之后，而且只写这一段自己的剧情，")
+                    .append("不要把后面还没写的内容提前塞进来。\n");
         }
         if (writtenCount > 0) {
             builder.append("\n【已写章节】共 ").append(writtenCount).append(" 章，新总纲要与其后剧情衔接。\n");
@@ -396,7 +453,9 @@ public class MasterOutlineService {
             builder.append(hasText(requirement) ? requirement
                     : "按现有设定把故事主线拆成有因果递进的总纲，覆盖开局到结局方向。").append("\n");
         }
-        builder.append("\n请输出 ").append(count).append(" 条总纲。");
+        builder.append("\n请输出 ").append(count).append(" 条总纲。")
+                .append("每条都要给出 plannedOutlines（这一段大概需要多少条章节大纲，12 上下浮动，")
+                .append("只作参考，不是硬上限：剧情复杂就多给几条，一句话能说完的少给）。\n");
         return builder.toString();
     }
 
@@ -443,8 +502,12 @@ public class MasterOutlineService {
     }
 
     private MasterOutlineVO toVO(MasterOutlineEntity entity, int chapterCount) {
+        String status = hasText(entity.getStatus())
+                ? entity.getStatus() : MasterOutlineEntity.STATUS_PENDING;
         return new MasterOutlineVO(entity.getId(), entity.getSortNo(), entity.getTitle(),
-                entity.getContent(), chapterCount, entity.getUpdatedAt());
+                entity.getContent(), chapterCount, status,
+                entity.getPlannedOutlines() == null ? 0 : entity.getPlannedOutlines(),
+                entity.getUpdatedAt());
     }
 
     private ChatResult chat(AiEndpoint endpoint, String systemPrompt, String userPrompt) {
@@ -487,6 +550,31 @@ public class MasterOutlineService {
         }
         String text = value.asText("").trim();
         return text.isEmpty() ? null : text;
+    }
+
+    /**
+     * 模型给的「预计大纲数量」：读数失败或没给就记 0（表示未规划）。
+     *
+     * <p>这只是参考值——自动写书不会因为它到了就关掉总纲，而是继续让模型判断这一段故事讲完没有。</p>
+     */
+    private int plannedOutlinesOf(JsonNode node) {
+        for (String field : new String[]{"plannedOutlines", "planned_outlines", "outlineCount"}) {
+            JsonNode value = node == null ? null : node.path(field);
+            if (value != null && !value.isMissingNode() && !value.isNull()) {
+                if (value.isNumber()) {
+                    return Math.max(0, Math.min(200, value.asInt()));
+                }
+                String text = value.asText("").trim();
+                if (!text.isEmpty()) {
+                    try {
+                        return Math.max(0, Math.min(200, Integer.parseInt(text.replaceAll("[^0-9]", ""))));
+                    } catch (NumberFormatException ignored) {
+                        return 0;
+                    }
+                }
+            }
+        }
+        return 0;
     }
 
     private String trimToNull(String value) {

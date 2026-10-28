@@ -51,14 +51,21 @@ import java.util.List;
  *
  * <p>每轮顺序执行，任一步阻断即结束本轮（已写好的章节保留）：</p>
  * <ol>
- *   <li>补总纲：不足时补到目标条数（单轮最多 {@value #MAX_MASTER_CALLS_PER_RUN} 次 AI 调用）；</li>
- *   <li>补大纲：按总纲顺序找缺口，单次 ≤{@value #OUTLINE_PER_MASTER} 条，不跨总纲，单轮最多补
- *       {@value #MAX_MASTER_GROUPS_PER_RUN} 条总纲；</li>
+ *   <li>补总纲：按目标章数粗估需要几条，不足就补（单轮最多 {@value #MAX_MASTER_CALLS_PER_RUN} 次 AI 调用）；</li>
+ *   <li>推进当前总纲：只有「当前这一段」在排大纲，一条总纲下的故事讲完（模型判定）才关掉它、
+ *       才轮到下一条；每次生成 {@value #OUTLINE_BATCH} 条，单轮最多调用
+ *       {@value #MAX_OUTLINE_CALLS_PER_RUN} 次；</li>
  *   <li>串行写正文：一章一章来，写完即分析，贴合度 &lt;{@value #OUTLINE_SCORE_THRESHOLD} 重写
- *       （最多 {@value #MAX_BODY_REGEN} 次取最高），AI 率 &lt;{@value #AI_SCORE_THRESHOLD} 自动改写；</li>
+ *       （最多 {@value #MAX_BODY_REGEN} 次取最高，每次把缺失项喂回提示词），AI 率
+ *       &lt;{@value #AI_SCORE_THRESHOLD} 自动改写；</li>
  *   <li>每 {@value #HEALTH_INTERVAL} 章体检一次，硬伤（P0）超阈值则熔断停止；</li>
  *   <li>「直到完结」模式做一次收尾评估。</li>
  * </ol>
+ *
+ * <p><b>总纲不再是「固定 10 章一段」</b>：一条总纲该拆多少条章节大纲，由故事本身决定——
+ * 模型在生成大纲时一并判断「这一段讲完没有」，讲完才把总纲置为
+ * {@link MasterOutlineEntity#STATUS_DONE}。总纲上的 {@code plannedOutlines} 只是参考值，
+ * 相差很多也不会被强行截断。</p>
  *
  * <p>本类在自动写书线程里跑，线程已由调度器 {@code markBypass()} 放行只读锁；同时
  * {@code UserContextHolder} 必须在进入前由调度器写入、结束后清理。</p>
@@ -68,8 +75,18 @@ import java.util.List;
 @RequiredArgsConstructor
 public class AutoWriteRunner {
 
-    /** 每条总纲覆盖的章节数 */
-    public static final int OUTLINE_PER_MASTER = 10;
+    /**
+     * 归总纲数量估算用的「一条总纲大概覆盖几章」。
+     *
+     * <p>只用于回答「还要不要补总纲」，不参与「这条总纲讲完没有」的判断——后者由模型按内容判定。</p>
+     */
+    private static final int CHAPTERS_PER_MASTER_ESTIMATE = 15;
+    /** 总纲没写预计大纲数时的参考值 */
+    public static final int DEFAULT_PLANNED_OUTLINES = 12;
+    /** 为一条总纲单次生成的章节大纲条数 */
+    private static final int OUTLINE_BATCH = 6;
+    /** 一条总纲下大纲条数的硬上限：防模型永远说「没讲完」导致无限补 */
+    private static final int MAX_OUTLINES_PER_MASTER = 40;
     /** 正文重写次数上限（含首次） */
     public static final int MAX_BODY_REGEN = 3;
     /** AI 调用失败的重试次数（不含首次）；重试用尽即停止本轮，等下个周期 */
@@ -83,9 +100,11 @@ public class AutoWriteRunner {
     /** 完结缓冲字数：距目标这么多字以内就评估收尾 */
     public static final int MARGIN_WORDS = 10000;
     /** 单轮补总纲最多调用几次 AI */
-    public static final int MAX_MASTER_CALLS_PER_RUN = 6;
-    /** 单轮最多补几条总纲下的大纲 */
-    public static final int MAX_MASTER_GROUPS_PER_RUN = 3;
+    public static final int MAX_MASTER_CALLS_PER_RUN = 4;
+    /** 总纲全部讲完但章节还不够时，一轮往后接着规划几条 */
+    private static final int CONTINUE_MASTER_COUNT = 3;
+    /** 单轮为总纲补大纲最多调用几次 AI */
+    public static final int MAX_OUTLINE_CALLS_PER_RUN = 4;
     /** 报告流水保留轮数 */
     private static final int RUN_KEEP = 50;
     /** 单次写正文的字数上限（受主链路校验约束） */
@@ -149,27 +168,28 @@ public class AutoWriteRunner {
                 return RunResult.failed("尚未设置目标章数");
             }
         }
-        int masterTarget = Math.max(1, (int) Math.ceil((double) targetChapters / OUTLINE_PER_MASTER));
+        int masterTarget = estimateMasterTarget(targetChapters);
 
         int masterCreated = 0;
-        int outlineCreated = 0;
+        OutlineAdvance advance = OutlineAdvance.empty();
 
         // 1) 补总纲
         try {
-            masterCreated = fillMasterOutlines(novelId, masterTarget);
+            masterCreated = fillMasterOutlines(novelId, masterTarget, targetChapters);
         } catch (BizException ex) {
             return RunResult.failed("补总纲失败：" + safeMessage(ex));
         }
 
-        // 2) 补大纲（不跨总纲）
+        // 2) 推进当前总纲：只有这一段在排大纲，讲完才关、关了才开下一条
         try {
-            outlineCreated = fillChapterOutlines(novelId, task);
+            advance = advanceCurrentMaster(novelId);
         } catch (BizException ex) {
             return RunResult.failed("补大纲失败：" + safeMessage(ex));
         }
+        int outlineCreated = advance.created();
 
         // 3) 串行写正文
-        List<ChapterEntity> pending = pendingChapters(novelId);
+        List<ChapterEntity> pending = writableChapters(novelId);
         int perRun = clampPerRun(task.getChaptersPerRun());
         int written = 0;
         boolean interrupted = false;
@@ -237,6 +257,8 @@ public class AutoWriteRunner {
         message = "本轮生成 " + written + " 章"
                 + (masterCreated > 0 ? "，补总纲 " + masterCreated + " 条" : "")
                 + (outlineCreated > 0 ? "，补大纲 " + outlineCreated + " 条" : "")
+                + (advance.closedTitle() != null ? "，总纲「" + advance.closedTitle() + "」已讲完" : "")
+                + (advance.currentTitle() != null ? "，当前总纲「" + advance.currentTitle() + "」" : "")
                 + (hard != null ? "，体检硬伤 " + hard + " 条" : "");
         if (interrupted) {
             // 中断也算失败：连续失败计数会累加，达标后熔断
@@ -252,15 +274,37 @@ public class AutoWriteRunner {
     /* 1) 补总纲                                                           */
     /* ------------------------------------------------------------------ */
 
-    private int fillMasterOutlines(Long novelId, int masterTarget) {
+    /**
+     * 补总纲。
+     *
+     * <p>两个触发条件：① 条数还不够 {@code masterTarget}；② 条数够了，但**所有总纲都已讲完**
+     * 而规划出的章节数还不够目标章数——说明前面几条总纲体量偏小，得继续往后规划。
+     * 少了 ② 会出现「总纲全部 DONE、没有章节可写、每轮空转」的死局。</p>
+     */
+    private int fillMasterOutlines(Long novelId, int masterTarget, int targetChapters) {
         int current = countMasterOutlines(novelId);
-        if (current >= masterTarget) {
+        int missing = masterTarget - current;
+        if (missing <= 0) {
+            boolean exhausted = current > 0 && currentMaster(novelId) == null;
+            boolean shortOfChapters = countChapters(novelId) < targetChapters;
+            if (!exhausted || !shortOfChapters) {
+                return 0;
+            }
+            // 全部讲完但章节不够：继续往后规划，一次补一小段，避免一轮里堆出几十条
+            missing = CONTINUE_MASTER_COUNT;
+            log.info("[auto-write] all masters closed but chapters short novelId={} planned={} target={}",
+                    novelId, countChapters(novelId), targetChapters);
+        }
+        // 每条总纲至少覆盖 1 章，总纲数不该超过目标章数
+        int room = Math.max(0, targetChapters - current);
+        missing = Math.min(missing, room);
+        if (missing <= 0) {
             return 0;
         }
         int created = 0;
         int calls = 0;
-        while (current + created < masterTarget && calls < MAX_MASTER_CALLS_PER_RUN) {
-            int need = Math.min(12, masterTarget - (current + created));
+        while (created < missing && calls < MAX_MASTER_CALLS_PER_RUN) {
+            int need = Math.min(12, missing - created);
             MasterOutlineGenerateRequest request = new MasterOutlineGenerateRequest();
             request.setCount(need);
             request.setPrompt("请按全书规模一次性规划到位，覆盖从开局到完结的完整走向。");
@@ -278,46 +322,133 @@ public class AutoWriteRunner {
     }
 
     /* ------------------------------------------------------------------ */
-    /* 2) 补大纲                                                           */
+    /* 2) 推进当前总纲的大纲                                                */
     /* ------------------------------------------------------------------ */
 
-    private int fillChapterOutlines(Long novelId, AutoWriteTaskEntity task) {
+    /**
+     * 按顺序推进「当前这一段」：为它补大纲，讲完了才关掉，关掉下一次才轮到下一条。
+     *
+     * <p>关键规则（与老的「固定 10 章一段」彻底不同）：</p>
+     * <ul>
+     *   <li>同一时刻只有一条总纲在排大纲：{@code status} 不是 DONE 的第一条；</li>
+     *   <li>一条总纲排多少条大纲由内容决定，每次 {@value #OUTLINE_BATCH} 条，直到模型判定
+     *       「这一段讲完」（{@code masterFinished}）才置 DONE；</li>
+     *   <li>{@code plannedOutlines} 只是参考：模型没给判断时才退化成「到了参考值就算讲完」；</li>
+     *   <li>硬上限 {@value #MAX_OUTLINES_PER_MASTER} 条，防止模型永远说没讲完。</li>
+     * </ul>
+     */
+    private OutlineAdvance advanceCurrentMaster(Long novelId) {
         int created = 0;
-        int groups = 0;
-        while (groups < MAX_MASTER_GROUPS_PER_RUN) {
-            List<MasterOutlineEntity> masters = masterOutlines(novelId);
-            MasterOutlineEntity gapMaster = null;
-            for (MasterOutlineEntity master : masters) {
-                if (countChaptersUnderMaster(novelId, master.getId()) < OUTLINE_PER_MASTER) {
-                    gapMaster = master;
-                    break;
-                }
-            }
-            if (gapMaster == null) {
+        String closedTitle = null;
+        int calls = 0;
+        MasterOutlineEntity current = null;
+
+        while (calls < MAX_OUTLINE_CALLS_PER_RUN) {
+            current = currentMaster(novelId);
+            if (current == null) {
                 break;
             }
-            int have = countChaptersUnderMaster(novelId, gapMaster.getId());
-            int need = Math.min(OUTLINE_PER_MASTER - have, OUTLINE_PER_MASTER);
-            if (need <= 0) {
-                break;
+            Long masterId = current.getId();
+            if (!MasterOutlineEntity.STATUS_RUNNING.equals(current.getStatus())) {
+                masterOutlineService.markStatus(masterId, MasterOutlineEntity.STATUS_RUNNING);
+                current.setStatus(MasterOutlineEntity.STATUS_RUNNING);
             }
+            int have = countChaptersUnderMaster(novelId, masterId);
+            if (have >= MAX_OUTLINES_PER_MASTER) {
+                closeMaster(current, "大纲已达硬上限 " + MAX_OUTLINES_PER_MASTER + " 条");
+                closedTitle = current.getTitle();
+                log.info("[auto-write] master forced closed novelId={} masterId={} outlines={}",
+                        novelId, masterId, have);
+                continue;
+            }
+
+            int need = Math.min(OUTLINE_BATCH, MAX_OUTLINES_PER_MASTER - have);
             OutlineGenerateRequest request = new OutlineGenerateRequest();
-            request.setMasterOutlineId(gapMaster.getId());
+            request.setMasterOutlineId(masterId);
             request.setChapterCount(need);
             request.setStartChapterNo(nextChapterNo(novelId));
             request.setUseSearch(Boolean.FALSE);
+            request.setPrompt("接着这条总纲已有的章节往下写，把这一段的故事讲完；"
+                    + "已经排过的情节不要再写一遍。");
             OutlineGenerateResultVO result = aiOutlineService.generate(novelId, request);
-            groups++;
+            calls++;
             int made = result == null || result.chapters() == null ? 0 : result.chapters().size();
             if (made == 0) {
+                // 生不出来就停，别在本轮里死循环；下个周期再来
                 break;
             }
             created += made;
+
+            int total = have + made;
+            boolean finished = masterFinished(current, total, result);
+            log.info("[auto-write] master progress novelId={} masterId={} planned={} now={} finished={} reason={}",
+                    novelId, masterId, referenceOutlines(current), total, finished,
+                    result == null ? null : result.masterReason());
+            if (finished) {
+                closeMaster(current, result == null ? null : result.masterReason());
+                closedTitle = current.getTitle();
+                // 关掉之后继续下一轮循环：下一条总纲可以在同一轮里开个头
+            }
         }
+
         if (created > 0) {
-            log.info("[auto-write] chapter outlines created novelId={} count={}", novelId, created);
+            log.info("[auto-write] chapter outlines created novelId={} count={} calls={} closed={}",
+                    novelId, created, calls, closedTitle);
         }
-        return created;
+        return new OutlineAdvance(created, closedTitle,
+                current == null ? null : current.getTitle());
+    }
+
+    /**
+     * 这一段讲完没有？
+     *
+     * <p>以模型判断为准；模型没给（返回 null）时退回参考值：到了 estimated 条就算讲完。
+     * 注意返回 false 不等于「再硬塞几条」，下一批会接着往后写。</p>
+     */
+    private boolean masterFinished(MasterOutlineEntity master, int total, OutlineGenerateResultVO result) {
+        Boolean judged = result == null ? null : result.masterFinished();
+        if (judged != null) {
+            return judged;
+        }
+        int reference = referenceOutlines(master);
+        return total >= reference;
+    }
+
+    /** 这条总纲的参考大纲数：优先取模型规划时给的值，没给就用默认值。 */
+    private int referenceOutlines(MasterOutlineEntity master) {
+        Integer planned = master.getPlannedOutlines();
+        return planned == null || planned <= 0 ? DEFAULT_PLANNED_OUTLINES : planned;
+    }
+
+    /** 把总纲置为已完成。 */
+    private void closeMaster(MasterOutlineEntity master, String reason) {
+        masterOutlineService.markStatus(master.getId(), MasterOutlineEntity.STATUS_DONE);
+        log.info("[auto-write] master closed masterId={} title={} reason={}",
+                master.getId(), master.getTitle(), reason);
+    }
+
+    /** 当前该推进的总纲：{@code sort_no} 升序里第一条不是 DONE 的。 */
+    private MasterOutlineEntity currentMaster(Long novelId) {
+        for (MasterOutlineEntity master : masterOutlineService.ordered(novelId)) {
+            String status = master.getStatus();
+            if (!MasterOutlineEntity.STATUS_DONE.equals(status)) {
+                return master;
+            }
+        }
+        return null;
+    }
+
+    /** 按目标章数粗估需要几条总纲（只用于决定「还要不要补」）。 */
+    private int estimateMasterTarget(int targetChapters) {
+        return Math.max(1, (int) Math.ceil((double) targetChapters / CHAPTERS_PER_MASTER_ESTIMATE));
+    }
+
+    /** 一轮里总纲推进的结果。 */
+    private record OutlineAdvance(int created, String closedTitle, String currentTitle) {
+
+        static OutlineAdvance empty() {
+            return new OutlineAdvance(0, null, null);
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -326,29 +457,52 @@ public class AutoWriteRunner {
 
     private void writeOneChapter(ChapterEntity chapter, int targetWords) {
         Long chapterId = chapter.getId();
+        int chapterNo = chapter.getChapterNo() == null ? 0 : chapter.getChapterNo();
 
-        // 3.1 生成正文 + 分析：最多 MAX_BODY_REGEN 次，记录最高分那版
+        // 3.1 生成正文 + 分析：最多 MAX_BODY_REGEN 次，记录最高分那版。
+        //     第 2 次起把上一版的「漏掉的剧情点 / 修改建议」喂回提示词——
+        //     提示词一字不改地重发，模型只会换个说法重写一遍，分数基本不动。
         String bestContent = null;
         int bestOutline = -1;
         int bestAi = -1;
-        int lastAi = -1;
         String lastContent = null;
+        int lastAi = -1;
+        boolean analysisUnavailable = false;
+        List<String> misses = List.of();
+        List<String> suggestions = List.of();
+
         for (int attempt = 1; attempt <= MAX_BODY_REGEN; attempt++) {
-            ContentGenerateResultVO generated = generateBodyWithRetry(chapterId, targetWords);
+            String extra = attempt == 1 ? null : rewriteHint(misses, suggestions);
+            ContentGenerateResultVO generated = generateBodyWithRetry(chapterId, targetWords, extra);
             String content = generated == null ? null : generated.content();
-            int[] scores = analyzeScores(chapterId, targetWords);
-            int outline = scores[0];
-            int ai = scores[1];
+            ScoreResult score = analyzeScores(chapterId, targetWords);
+
             lastContent = content;
-            lastAi = ai;
-            if (outline > bestOutline) {
-                bestOutline = outline;
+            lastAi = score.ai();
+            misses = score.misses();
+            suggestions = score.suggestions();
+            analysisUnavailable = score.unavailable();
+            if (score.outline() > bestOutline) {
+                bestOutline = score.outline();
                 bestContent = content;
-                bestAi = ai;
+                bestAi = score.ai();
             }
-            if (outline >= OUTLINE_SCORE_THRESHOLD) {
+            if (score.unavailable()) {
+                // 拿不到分数就不装成达标：明确记一笔，本轮不做贴合度重写
+                log.warn("[auto-write] chapter analysis unavailable, skip fidelity rewrite chapterId={} no={}",
+                        chapterId, chapterNo);
                 break;
             }
+            if (score.outline() >= OUTLINE_SCORE_THRESHOLD) {
+                if (attempt > 1) {
+                    log.info("[auto-write] rewrite passed chapterId={} no={} attempt={}/{} outline={}",
+                            chapterId, chapterNo, attempt, MAX_BODY_REGEN, score.outline());
+                }
+                break;
+            }
+            log.info("[auto-write] outline score {} < {} , rewrite {}/{} chapterId={} no={} misses={} suggestions={}",
+                    score.outline(), OUTLINE_SCORE_THRESHOLD, attempt, MAX_BODY_REGEN,
+                    chapterId, chapterNo, score.misses().size(), score.suggestions().size());
         }
 
         // 最后一版不是最高分 → 写回最高分那版
@@ -357,6 +511,10 @@ public class AutoWriteRunner {
         if (bestContent != null && !bestContent.equals(lastContent)) {
             finalContent = bestContent;
             finalAi = bestAi;
+        }
+        if (!analysisUnavailable && bestOutline >= 0 && bestOutline < OUTLINE_SCORE_THRESHOLD) {
+            log.warn("[auto-write] chapter keeps low fidelity after {} attempts chapterId={} no={} best={}",
+                    MAX_BODY_REGEN, chapterId, chapterNo, bestOutline);
         }
 
         // 3.2 AI 率不足 → 改写一次
@@ -386,8 +544,39 @@ public class AutoWriteRunner {
         novelAssetService.updateChapter(chapterId, save, ChapterVersionEntity.SOURCE_AUTO_WRITE);
     }
 
+    /**
+     * 重写要求：把上一版被判定「没写到」的剧情点和修改建议明确写进提示词。
+     *
+     * <p>没有这两样东西时重写等于掷骰子——同一条提示词反复发，模型只会换几个词重说一遍。</p>
+     */
+    private String rewriteHint(List<String> misses, List<String> suggestions) {
+        StringBuilder hint = new StringBuilder("上一版没通过与本章大纲的贴合度检查，这一版必须补齐：\n");
+        boolean hasPoint = false;
+        if (misses != null && !misses.isEmpty()) {
+            hint.append("漏掉的剧情点：").append(String.join("；", head(misses, 6))).append("\n");
+            hasPoint = true;
+        }
+        if (suggestions != null && !suggestions.isEmpty()) {
+            hint.append("修改建议：").append(String.join("；", head(suggestions, 4))).append("\n");
+            hasPoint = true;
+        }
+        if (!hasPoint) {
+            hint.append("上一版把本章大纲的关键动作写成了概述，没有落到具体场面与对话上。\n");
+        }
+        hint.append("这些内容要真正发生、真正被写出来（该发生的发生、该出场的人物出场、该付的代价付掉），"
+                + "人物、设定与文风保持不变，不要用一句话交代过去。");
+        return hint.toString();
+    }
+
+    private List<String> head(List<String> values, int max) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        return values.size() <= max ? values : values.subList(0, max);
+    }
+
     /** 生成正文：失败重试 {@value #AI_RETRY_TIMES} 次，仍失败则抛出（本轮到此为止）。 */
-    private ContentGenerateResultVO generateBodyWithRetry(Long chapterId, int targetWords) {
+    private ContentGenerateResultVO generateBodyWithRetry(Long chapterId, int targetWords, String requirement) {
         BizException last = null;
         for (int i = 0; i <= AI_RETRY_TIMES; i++) {
             try {
@@ -395,6 +584,9 @@ public class AutoWriteRunner {
                 request.setMode("REPLACE");
                 request.setTargetWords(targetWords);
                 request.setUseSearch(Boolean.FALSE);
+                if (requirement != null && !requirement.isBlank()) {
+                    request.setPrompt(requirement);
+                }
                 return aiContentService.generate(chapterId, request);
             } catch (BizException ex) {
                 last = ex;
@@ -408,8 +600,13 @@ public class AutoWriteRunner {
         throw last;
     }
 
-    /** 分析并取 [outlineScore, aiScore]；分析前置不满足（顺序问题）时按「达标」处理，避免死循环。 */
-    private int[] analyzeScores(Long chapterId, int targetWords) {
+    /**
+     * 分析本章并取分数与改进点。
+     *
+     * <p>顺序校验不通过时<b>不能装成达标</b>（那会让低分章节永远不重写），
+     * 而是标为「分析不可用」，由调用方跳过贴合度重写并记日志。</p>
+     */
+    private ScoreResult analyzeScores(Long chapterId, int targetWords) {
         BizException last = null;
         for (int i = 0; i <= AI_RETRY_TIMES; i++) {
             try {
@@ -418,11 +615,14 @@ public class AutoWriteRunner {
                 ChapterAnalysisVO vo = chapterAnalysisService.analyze(chapterId, request);
                 int outline = vo == null || vo.outlineScore() == null ? -1 : vo.outlineScore();
                 int ai = vo == null || vo.aiScore() == null ? -1 : vo.aiScore();
-                return new int[]{outline, ai};
+                return new ScoreResult(outline, ai, outline < 0,
+                        vo == null || vo.outlineMisses() == null ? List.of() : vo.outlineMisses(),
+                        vo == null || vo.outlineSuggestions() == null ? List.of() : vo.outlineSuggestions());
             } catch (BizException ex) {
                 if (ex.getErrorCode() == ErrorCode.CHAPTER_ORDER_VIOLATION) {
-                    log.warn("[auto-write] analyze skipped (order) chapterId={}", chapterId);
-                    return new int[]{OUTLINE_SCORE_THRESHOLD, AI_SCORE_THRESHOLD};
+                    log.warn("[auto-write] analyze skipped (prior chapter not analyzed) chapterId={} reason={}",
+                            chapterId, ex.getMessage());
+                    return ScoreResult.notAvailable();
                 }
                 last = ex;
                 log.warn("[auto-write] analyze failed attempt={}/{} chapterId={} code={} reason={}",
@@ -433,6 +633,24 @@ public class AutoWriteRunner {
             }
         }
         throw last;
+    }
+
+    /**
+     * 一次分析的结论。
+     *
+     * @param outline   大纲贴合度，-1 表示没拿到
+     * @param ai        AI 率，-1 表示没拿到
+     * @param unavailable 分析本身没跑成（例如前置章节还没分析），不能当成达标
+     * @param misses    模型指出的「大纲里有、正文没写」的剧情点
+     * @param suggestions 模型给出的修改建议
+     */
+    private record ScoreResult(int outline, int ai, boolean unavailable,
+                               List<String> misses, List<String> suggestions) {
+
+        /** 分析没跑成：分数拿不到，不能当成达标。 */
+        static ScoreResult notAvailable() {
+            return new ScoreResult(-1, -1, true, List.of(), List.of());
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -513,12 +731,12 @@ public class AutoWriteRunner {
             log.info("[auto-write] closing A: remaining small novelId={} remaining={}", novelId, remaining);
             return 0;
         }
-        if (remaining <= OUTLINE_PER_MASTER) {
+        if (remaining <= DEFAULT_PLANNED_OUTLINES) {
             log.info("[auto-write] closing B: generate ending arc novelId={} remaining={}", novelId, remaining);
             MasterOutlineGenerateRequest request = new MasterOutlineGenerateRequest();
             request.setCount(1);
             request.setPrompt("这是全书的收尾：请生成一条「结局向」的总纲，明确把主线冲突收束、"
-                    + "交代主要人物归宿，后续章节将在 10 章内完结。");
+                    + "交代主要人物归宿，后续章节将在 " + DEFAULT_PLANNED_OUTLINES + " 章内完结。");
             List<MasterOutlineVO> created = masterOutlineService.generate(novelId, request);
             return created == null ? 0 : created.size();
         }
@@ -605,12 +823,6 @@ public class AutoWriteRunner {
         return count == null ? 0 : count.intValue();
     }
 
-    private List<MasterOutlineEntity> masterOutlines(Long novelId) {
-        return masterOutlineMapper.selectList(Wrappers.<MasterOutlineEntity>lambdaQuery()
-                .eq(MasterOutlineEntity::getNovelId, novelId)
-                .orderByAsc(MasterOutlineEntity::getSortNo));
-    }
-
     private int countChaptersUnderMaster(Long novelId, Long masterOutlineId) {
         Long count = chapterMapper.selectCount(Wrappers.<ChapterEntity>lambdaQuery()
                 .eq(ChapterEntity::getNovelId, novelId)
@@ -643,11 +855,43 @@ public class AutoWriteRunner {
         return count == null ? 0 : count.intValue();
     }
 
-    /** 已规划、未写正文的章节，按章号升序。 */
-    private List<ChapterEntity> pendingChapters(Long novelId) {
+    /**
+     * 可以写正文的章节：已规划、未写正文，且按章号升序。
+     *
+     * <p>只放行「当前总纲及更早总纲」下的章节——后面的总纲还没轮到，即使有人手工给它排了大纲，
+     * 也不该抢在前面写，否则剧情会跳。没关联总纲的章节（手工建的）一并放行。</p>
+     */
+    private List<ChapterEntity> writableChapters(Long novelId) {
+        List<MasterOutlineEntity> masters = masterOutlineService.ordered(novelId);
+        if (masters.isEmpty()) {
+            return pendingChapters(novelId, null);
+        }
+        int boundary = masters.get(masters.size() - 1).getSortNo() == null
+                ? 0 : masters.get(masters.size() - 1).getSortNo();
+        for (MasterOutlineEntity master : masters) {
+            if (!MasterOutlineEntity.STATUS_DONE.equals(master.getStatus())) {
+                boundary = master.getSortNo() == null ? 0 : master.getSortNo();
+                break;
+            }
+        }
+        List<Long> allowed = new ArrayList<>();
+        for (MasterOutlineEntity master : masters) {
+            int sortNo = master.getSortNo() == null ? 0 : master.getSortNo();
+            if (sortNo <= boundary) {
+                allowed.add(master.getId());
+            }
+        }
+        return pendingChapters(novelId, allowed);
+    }
+
+    /** 已规划、未写正文的章节，按章号升序；{@code masterIds} 为 null 表示不限制归属。 */
+    private List<ChapterEntity> pendingChapters(Long novelId, List<Long> masterIds) {
         return chapterMapper.selectList(Wrappers.<ChapterEntity>lambdaQuery()
                 .eq(ChapterEntity::getNovelId, novelId)
                 .and(w -> w.isNull(ChapterEntity::getWordCount).or().le(ChapterEntity::getWordCount, 0))
+                .and(masterIds != null && !masterIds.isEmpty(),
+                        w -> w.isNull(ChapterEntity::getMasterOutlineId)
+                                .or().in(ChapterEntity::getMasterOutlineId, masterIds))
                 .orderByAsc(ChapterEntity::getChapterNo));
     }
 
