@@ -38,3 +38,5 @@ dist/
 
 # ===== 部署环境配置：真实值不提交，模板见 script/deploy/server.env.example =====
 script/deploy/server.env
+# 仓库根 docker-compose.yaml 的本地覆盖（数据库密码、密钥）
+.env
