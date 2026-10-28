@@ -347,13 +347,13 @@ public class AiEventService {
                   "events": [
                     {
                       "eventTime": "具体故事内时间，如 第三年春末 / 主角十八岁那年冬天",
-                      "title": "事件标题，不超过 20 字，不要与已有事件重复",
+                      "title": "事件标题，20 字内：取最具体的那件事（一场交割、一次误杀、一张作废的契），不用「危机」「暗流」「惊变」这类空词，也不用四字成语式",
                       "description": "100~180 字：地点或时机 → 目标 → 阻碍 → 转折 → 代价 → 留下什么钩子",
                       "status": "UNUSED / ONGOING / DONE / ABANDONED",
                       "participants": ["参与角色姓名，2~5 个，必须来自现有角色或本事件的 newCharacters"],
                       "newCharacters": [
                         {
-                          "name": "新角色姓名，不要与现有角色重名",
+                          "name": "新角色姓名，不与现有角色重名；按本书的地域与阶层现起，避开烂大街的人名组合",
                           "rolePos": "SUPPORTING / ANTAGONIST / MINOR",
                           "identity": "身份职位",
                           "gender": "性别",

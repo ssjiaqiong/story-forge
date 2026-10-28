@@ -315,7 +315,7 @@ public class AiFactionService {
                 {
                   "factions": [
                     {
-                      "name": "势力名称，不超过 20 字，不要与已有势力重复",
+                      "name": "势力名称，20 字内，不与已有势力重复；要透露它做什么或归谁管（如「抬尸行」「盐引公所」「夜巡第三班」），不用「天机阁」「万宝楼」「神秘组织」这类空壳",
                       "category": "公司 / 帮派 / 国家 / 组织 / 其他",
                       "status": "ACTIVE / DORMANT / DESTROYED / DISBANDED",
                       "remark": "宗旨、运作方式与内部矛盾，60~120 字",

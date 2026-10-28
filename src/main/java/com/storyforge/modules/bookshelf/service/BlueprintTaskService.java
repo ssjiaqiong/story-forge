@@ -170,7 +170,7 @@ public class BlueprintTaskService {
               ]
             }
             characters 给 3~6 个，至少 1 个 ANTAGONIST。
-            """ + COMMON_RULES;
+            """ + PromptKit.NAMING + COMMON_RULES;
 
     private final AiSceneEndpointResolver endpointResolver;
     private final AiUsageService aiUsageService;
