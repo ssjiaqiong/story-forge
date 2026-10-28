@@ -256,15 +256,15 @@ docker compose logs -f app        # 首次启动：Flyway 建表 + 创建初始�
 # 访问 http://localhost:8080 （admin / Admin@123456 → 首登强制改密）
 ```
 
-- 镜像 `ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.1`，换版本：
-  `IMAGE_TAG=v1.2.1 docker compose up -d`，或直接改 compose 里的 `image`
+- 镜像 `ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.2`，换版本：
+  `IMAGE_TAG=v1.2.2 docker compose up -d`，或直接改 compose 里的 `image`
 - 数据全部落在**同级** `data/`：`pg/`（数据库）、`files/`（业务文件）、`covers/`（封面）、`logs/`（日志），
   整个目录拷走即完成备份 / 迁移（已在 `.gitignore` 中）
 - 自定义配置：在同级建 `.env`（同样已 gitignore），compose 会自动读取并做变量替换
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `IMAGE_TAG` | `v1.2.1` | 镜像标签 |
+| `IMAGE_TAG` | `v1.2.2` | 镜像标签 |
 | `APP_PORT` | `8080` | 对外端口 |
 | `DB_NAME` / `DB_USER` / `DB_PASSWORD` | `storyforge` / `storyforge` / `storyforge` | 数据库（容器内自动创建） |
 | `STORYFORGE_JWT_SECRET` | 内置占位值 | JWT 签名密钥，**≥ 32 字节** |
