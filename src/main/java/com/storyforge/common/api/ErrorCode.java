@@ -119,6 +119,11 @@ public enum ErrorCode {
     AGENT_PLAN_RUNNING(40079, "本书已有一个助手任务在执行，请等它结束或先暂停", 409),
     AGENT_PLAN_STATE_INVALID(40080, "当前任务状态不支持该操作", 400),
     AGENT_PLAN_PLANNING_FAILED(40081, "没能把这条指令拆成可执行的步骤，请说得更具体一些", 502),
+    IMPORT_NOT_FOUND(40082, "导入记录不存在", 404),
+    IMPORT_FILE_INVALID(40083, "仅支持 txt / md 等纯文本文件，请检查文件格式", 400),
+    IMPORT_TEXT_TOO_SHORT(40084, "上传的文本太短，至少需要 1000 个汉字", 400),
+    IMPORT_TEXT_TOO_LONG(40085, "上传的文本超过 500 万汉字，请拆分后分次导入", 400),
+    IMPORT_RUNNING(40086, "已有一个导入任务在跑，请等它结束再发起新的", 409),
 
     /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),

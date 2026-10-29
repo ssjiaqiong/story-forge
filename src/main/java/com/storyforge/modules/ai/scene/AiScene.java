@@ -40,7 +40,8 @@ public enum AiScene {
     INSPIRATION_CHAT("灵感对话", "创作助手", AiConfigKind.TEXT),
     NOVEL_EXTRACT("小说要素抽取", "创作助手", AiConfigKind.TEXT),
     NOVEL_AGENT("小说智能助手", "创作助手", AiConfigKind.TEXT),
-    DECONSTRUCT("拆书改编", "创作助手", AiConfigKind.TEXT);
+    DECONSTRUCT("拆书改编", "创作助手", AiConfigKind.TEXT),
+    IMPORT_ANALYZE("整本导入逆推", "创作助手", AiConfigKind.TEXT);
 
     /** 中文名称 */
     private final String label;

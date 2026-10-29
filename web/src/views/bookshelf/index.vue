@@ -22,6 +22,7 @@
         </el-select>
         <el-button size="small" :loading="loading" @click="reload">刷新</el-button>
         <el-button size="small" @click="openDeconstruct">拆书改编</el-button>
+        <el-button size="small" @click="openTxtImport">整本导入</el-button>
         <el-button size="small" :loading="importing" @click="pickImportFile">导入</el-button>
         <el-button size="small" type="primary" @click="openCreate">创建小说</el-button>
         <input
@@ -299,6 +300,9 @@
     <!-- 拆书改编 -->
     <DeconstructDialog v-model="deconstructVisible" @saved="onDeconstructSaved" />
 
+    <!-- 整本导入：TXT 成稿 → 原文入库 → AI 逆推档案 -->
+    <TxtImportDialog v-model="txtImportVisible" @saved="onTxtImportSaved" />
+
     <!-- 封面管理 -->
     <CoverDialog v-model="coverVisible" :novel="coverNovel" @updated="onCoverUpdated" />
   </div>
@@ -329,6 +333,7 @@ import {
 import { listNovels, type NovelVO } from '@/api/novel'
 import BlueprintEditor from './components/BlueprintEditor.vue'
 import DeconstructDialog from './components/DeconstructDialog.vue'
+import TxtImportDialog from './components/TxtImportDialog.vue'
 import BookCover from './components/BookCover.vue'
 import CoverDialog from './components/CoverDialog.vue'
 
@@ -338,6 +343,17 @@ const deconstructVisible = ref(false)
 
 function openDeconstruct() {
   deconstructVisible.value = true
+}
+
+/* ---------- 整本导入 ---------- */
+const txtImportVisible = ref(false)
+
+function openTxtImport() {
+  txtImportVisible.value = true
+}
+
+function onTxtImportSaved() {
+  void load()
 }
 
 function onDeconstructSaved() {
