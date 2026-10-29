@@ -14,7 +14,8 @@
 
     <groupId>com.storyforge</groupId>
     <artifactId>storyforge</artifactId>
-    <version>1.0.0</version>
+    <!-- 版本号唯一来源：改这里即全局生效（界面页脚、/api/system/info、/actuator/info、镜像标签） -->
+    <version>1.2.5</version>
     <name>storyforge</name>
     <description>StoryForge - AI 长篇小说创作平台（单用户空间 / 超管平台）</description>
 
@@ -183,6 +184,16 @@
                         </exclude>
                     </excludes>
                 </configuration>
+                <executions>
+                    <!-- 生成 META-INF/build-info.properties：BuildProperties 供 /api/system/info 读取版本号，
+                         /actuator/info 也会据此返回 build 段，方便部署后核对跑的是哪个版本 -->
+                    <execution>
+                        <id>build-info</id>
+                        <goals>
+                            <goal>build-info</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

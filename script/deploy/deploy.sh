@@ -14,7 +14,7 @@
 #     ./script/deploy/deploy.sh --help
 #
 #   配置：同目录 server.env（HOST / USER / KEY / REMOTE_DIR / APP_PORT / 镜像仓库）
-#   默认镜像：ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.4（见 remote/docker-compose.yml）
+#   默认镜像：ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.5（见 remote/docker-compose.yml）
 #   首次部署自动生成 .env（含随机密钥）；再次部署保留远端 .env 不覆盖。
 # =============================================================================
 set -euo pipefail
@@ -77,10 +77,10 @@ JAVA_OPTS="${JAVA_OPTS:--Xms128m -Xmx640m}"
 
 # ---------- 镜像仓库配置（默认部署模式） ----------
 # 与 remote/docker-compose.yml 的 image 默认值保持一致
-DEFAULT_IMAGE="ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.4"
+DEFAULT_IMAGE="ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.5"
 REGISTRY="${REGISTRY:-ccr.ccs.tencentyun.com}"
 IMAGE_NAME="${IMAGE_NAME:-jiaqiong/story-forge}"
-IMAGE_TAG="${IMAGE_TAG:-v1.2.4}"
+IMAGE_TAG="${IMAGE_TAG:-v1.2.5}"
 APP_IMAGE="${IMAGE_OVERRIDE:-}"
 if [ -z "$APP_IMAGE" ]; then
     APP_IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"

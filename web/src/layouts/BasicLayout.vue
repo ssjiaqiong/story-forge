@@ -79,17 +79,24 @@
         <span class="footer-sep">·</span>
         <span>开源仓库</span>
         <a :href="SOURCE_REPO_URL" target="_blank" rel="noopener noreferrer">{{ SOURCE_REPO_URL }}</a>
+        <template v-if="systemStore.version">
+          <span class="footer-sep">·</span>
+          <span class="footer-version" :title="systemStore.buildTime ? `构建于 ${systemStore.buildTime}` : '当前部署的代码版本'">
+            v{{ systemStore.version }}
+          </span>
+        </template>
       </el-footer>
     </el-container>
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, type Component } from 'vue'
+import { computed, onMounted, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { ArrowDown, Collection, Connection, EditPen, Expand, Fold, MagicStick, Moon, Notebook, Odometer, Reading, Search, Sunny, User, UserFilled } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import { useSystemStore } from '@/stores/system'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
 import { ICP_NUMBER, ICP_URL, LICENSE_URL, openExternal, SOURCE_REPO_URL } from '@/config/about'
 
@@ -103,6 +110,12 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const theme = useThemeStore()
+const systemStore = useSystemStore()
+
+/* 页脚版本号只在首次进入主布局时拉一次 */
+onMounted(() => {
+  systemStore.load()
+})
 
 /* 侧栏固定深底：深色主题下再压暗一档 */
 const menuBg = computed(() => (theme.isDark ? '#111318' : '#1f2733'))
@@ -351,6 +364,13 @@ async function onCommand(command: string) {
 
 .footer-sep {
   margin: 0 4px;
+}
+
+/* 部署版本号：弱化处理，不抢备案与仓库链接的注意力 */
+.footer-version {
+  font-family: var(--el-font-family);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
 }
 
 .is-active-theme {

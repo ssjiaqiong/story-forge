@@ -61,21 +61,34 @@
       <span class="footer-sep">·</span>
       <span>开源仓库</span>
       <a :href="SOURCE_REPO_URL" target="_blank" rel="noopener noreferrer">{{ SOURCE_REPO_URL }}</a>
+      <template v-if="systemStore.version">
+        <span class="footer-sep">·</span>
+        <span class="footer-version" :title="systemStore.buildTime ? `构建于 ${systemStore.buildTime}` : '当前部署的代码版本'">
+          v{{ systemStore.version }}
+        </span>
+      </template>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import { useSystemStore } from '@/stores/system'
 import { ICP_NUMBER, ICP_URL, LICENSE_NAME, LICENSE_URL, SOURCE_REPO_URL } from '@/config/about'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const systemStore = useSystemStore()
+
+/* 登录页也要显示部署版本号（此时还没有令牌，接口是公开的） */
+onMounted(() => {
+  systemStore.load()
+})
 
 const formRef = ref<FormInstance>()
 const loading = ref(false)
@@ -215,5 +228,11 @@ async function onSubmit() {
 .footer-sep {
   margin: 0 2px;
   opacity: 0.6;
+}
+
+/* 部署版本号：与备案号、仓库地址同排，弱化处理 */
+.footer-version {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
 }
 </style>

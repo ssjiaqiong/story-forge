@@ -76,6 +76,8 @@ public class SecurityConfig {
                         // 运维与文档
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+                        // 部署版本号：登录页页脚也要显示，必须免登录
+                        .requestMatchers("/api/system/info").permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         // 超管平台功能
                         .requestMatchers("/api/admin/**").hasRole("SUPER_ADMIN")
