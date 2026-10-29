@@ -226,7 +226,7 @@ EOF
         rsh "cd ${REMOTE_DIR} && APP_IMAGE='${APP_IMAGE}' docker compose up -d --no-build"
     else
         step "远端构建镜像并启动（compose up -d --build）"
-        rsh "cd ${REMOTE_DIR} && docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build"
+        rsh "cd ${REMOTE_DIR} && APP_IMAGE='${APP_IMAGE}' docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build"
     fi
 
     # ---------- 7. 健康检查 ----------
