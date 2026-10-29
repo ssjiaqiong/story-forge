@@ -223,6 +223,7 @@
             <el-tag size="small" :type="chapter.wordCount > 0 ? 'success' : 'info'" effect="plain">
               {{ chapter.wordCount > 0 ? '已写 ' + chapter.wordCount + ' 字' : '待写' }}
             </el-tag>
+            <el-button text type="primary" size="small" @click="openChapterDetail(chapter)">详情</el-button>
           </div>
           <p v-if="chapter.summary" class="aw-outline-summary">{{ chapter.summary }}</p>
         </div>
@@ -233,6 +234,14 @@
         />
       </div>
     </el-drawer>
+
+    <!-- 章节大纲详情（只读） -->
+    <ChapterOutlineDetailDrawer
+      v-model="chapterDrawer"
+      :chapter-id="chapterPreview.id"
+      :chapter="chapterPreview.row"
+      :master-title="chapterPreview.masterTitle"
+    />
   </div>
 </template>
 
@@ -247,6 +256,7 @@ import {
   type ChapterVO,
   type MasterOutlineVO
 } from '@/api/novel-asset'
+import ChapterOutlineDetailDrawer from './ChapterOutlineDetailDrawer.vue'
 
 const props = defineProps<{ novelId: string; plannedWords: number }>()
 const emit = defineEmits<{ (e: 'locked-change', locked: boolean): void }>()
@@ -274,6 +284,13 @@ const chapters = ref<ChapterVO[]>([])
 const progressLoading = ref(false)
 const masterDrawer = ref(false)
 const activeMaster = ref<MasterOutlineVO | null>(null)
+/** 章节大纲详情（只读）：画面上已有数据，直接传给抽屉不用再请求 */
+const chapterDrawer = ref(false)
+const chapterPreview = reactive<{
+  id: string
+  row: ChapterVO | null
+  masterTitle: string
+}>({ id: '', row: null, masterTitle: '' })
 
 const form = reactive<AutoWriteTaskRequest>({
   enabled: false,
@@ -377,6 +394,14 @@ async function loadProgress(silent = false) {
 function openMaster(row: MasterOutlineVO) {
   activeMaster.value = row
   masterDrawer.value = true
+}
+
+/** 打开某条章节大纲的只读详情 */
+function openChapterDetail(chapter: ChapterVO) {
+  chapterPreview.id = chapter.id
+  chapterPreview.row = chapter
+  chapterPreview.masterTitle = activeMaster.value?.title || ''
+  chapterDrawer.value = true
 }
 
 function applyPreset(value: string) {

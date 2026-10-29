@@ -170,6 +170,7 @@
             </div>
             <p class="mo-content">{{ item.content || '还没有内容' }}</p>
             <div class="mo-actions">
+              <el-button text size="small" type="primary" @click="openMasterDetail(item)">查看</el-button>
               <el-button text size="small" @click="generateOutlineForMaster(item)">按此生成大纲</el-button>
               <el-button text size="small" @click="openMasterOutlineDialog(item)">编辑</el-button>
               <el-button text size="small" type="danger" @click="removeMasterOutline(item)">删除</el-button>
@@ -256,6 +257,7 @@
             </div>
             <el-tag size="small" :type="chapterStatusType(chapter.status)" effect="plain">{{ chapterStatusLabel(chapter.status) }}</el-tag>
             <div class="row-actions">
+              <el-button text size="small" type="primary" @click="openChapterDetail(chapter)">查看</el-button>
               <el-button text size="small" @click="openChapterDialog(chapter)">编辑</el-button>
               <el-dropdown
                 v-if="volumes.length > 1"
@@ -1482,6 +1484,21 @@
       </template>
     </el-dialog>
 
+    <!-- 总纲查看（只读）：总纲全文 + 它下面的章节大纲 -->
+    <MasterOutlineDetailDrawer
+      v-model="masterDetail.visible"
+      :novel-id="novelId"
+      :master="masterDetail.row"
+      :chapters="chapters"
+    />
+
+    <!-- 章节大纲查看（只读）：摘要、出场、事件与正文 -->
+    <ChapterOutlineDetailDrawer
+      v-model="chapterDetail.visible"
+      :chapter-id="chapterDetail.id"
+      :master-title="chapterDetail.masterTitle"
+    />
+
     <!-- AI 生成总纲弹窗 -->
     <el-dialog
       v-model="masterOutlineAiDialog.visible"
@@ -2454,6 +2471,8 @@ import AutoWritePanel from './components/AutoWritePanel.vue'
 import ChangeHistoryDrawer from './components/ChangeHistoryDrawer.vue'
 import ChapterVersionDrawer from './components/ChapterVersionDrawer.vue'
 import ChapterReviseDialog from './components/ChapterReviseDialog.vue'
+import MasterOutlineDetailDrawer from './components/MasterOutlineDetailDrawer.vue'
+import ChapterOutlineDetailDrawer from './components/ChapterOutlineDetailDrawer.vue'
 import AgentPanel from './components/AgentPanel.vue'
 import {
   analyzeChapter,
@@ -2678,6 +2697,17 @@ const masterOutlineAiDialog = reactive({
   visible: false,
   prompt: '',
   count: undefined as number | undefined
+})
+
+/* 只读查看：总纲详情 / 章节大纲详情 */
+const masterDetail = reactive({
+  visible: false,
+  row: null as MasterOutlineVO | null
+})
+const chapterDetail = reactive({
+  visible: false,
+  id: '',
+  masterTitle: ''
 })
 
 /* ---------- 章节 ---------- */
@@ -3780,6 +3810,19 @@ async function submitMasterOutlineAi() {
 function generateOutlineForMaster(item: MasterOutlineVO) {
   activeMenu.value = 'outline'
   openAiOutlineDialog(item.id)
+}
+
+/** 只读查看一条总纲：全文 + 它下面已经排出来的章节大纲 */
+function openMasterDetail(item: MasterOutlineVO) {
+  masterDetail.row = item
+  masterDetail.visible = true
+}
+
+/** 只读查看一条章节大纲 */
+function openChapterDetail(chapter: ChapterVO) {
+  chapterDetail.id = chapter.id
+  chapterDetail.masterTitle = masterOutlineTitle(chapter.masterOutlineId)
+  chapterDetail.visible = true
 }
 
 /* ---------- AI 生成大纲 ---------- */
