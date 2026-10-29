@@ -15,7 +15,7 @@ AI 长篇小说创作平台。**单用户空间**（用户即数据隔离单元�
 
 **许可**：[AGPL-3.0](./LICENSE) · Copyright (C) 2026 Jiaqiong · 源码 <https://gitee.com/jiaqiong/story-forge>
 
-> 本目录即工程根目录，下文所有相对路径均以 `app/` 为起点。
+> 仓库根目录就是工程根目录（`pom.xml` 所在层），下文所有相对路径都从这里算起。
 
 ---
 
@@ -36,7 +36,7 @@ AI 长篇小说创作平台。**单用户空间**（用户即数据隔离单元�
 ## 2. 目录结构
 
 ```text
-app/                                      ★ 工程根目录（后端 + 前端 + 部署 + 文档）
+story-forge/                              ★ 工程根目录（后端 + 前端 + 部署 + 文档，`pom.xml` 在这一层）
 ├── README.md                             本文件（概览 + 快速开始 + 运行约定）
 ├── LICENSE                               GNU AGPL-3.0 协议全文（本项目采用）
 ├── pom.xml                               Maven 构建入口（单模块）
@@ -156,7 +156,7 @@ app/                                      ★ 工程根目录（后端 + 前端 
 
 ## 4. 快速开始
 
-> 以下命令均在**工程根目录 `app/`** 下执行。
+> 以下命令均在**仓库根目录**（`pom.xml` 所在层）执行。
 
 ### 4.1 本地开发
 
@@ -272,7 +272,7 @@ SPRING_PROFILES_ACTIVE=sqlite SQLITE_PATH=./data/storyforge.db java -jar target/
 仓库根目录的 `docker-compose.yaml` 用的是腾讯云 TCR 上的发布镜像，一条命令起全套：
 
 ```bash
-# 工作目录 app/
+# 仓库根目录
 docker compose up -d
 docker compose logs -f app        # 首次启动：Flyway 建表 + 创建初始超管
 # 访问 http://localhost:8080 （admin / Admin@123456 → 首登强制改密）
@@ -381,7 +381,7 @@ dist\StoryForge\
 换服务器或密钥只改这一个文件。
 
 ```bash
-# Linux / macOS / Git Bash（工作目录 app/）
+# Linux / macOS / Git Bash（仓库根目录）
 ./script/deploy/deploy.sh                # 拉镜像 → 启动 → 健康检查（默认）
 ./script/deploy/deploy.sh --image ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.1
 ./script/deploy/deploy.sh --from-source  # 从源码构建（需 JDK/Maven/Node，仅离线兜底）
@@ -419,7 +419,7 @@ dist\StoryForge\
 （当前地址 `ccr.ccs.tencentyun.com/jiaqiong/story-forge`，命名空间/仓库在 TCR 控制台创建）。
 
 ```bash
-# Linux / macOS / Git Bash（工作目录 app/）
+# Linux / macOS / Git Bash（仓库根目录）
 ./script/deploy/build.sh                     # 打包 jar → 构建镜像 → 推送 ${IMAGE_TAG}
 ./script/deploy/build.sh --skip-jar          # 复用 target/app.jar（不重新打包）
 ./script/deploy/build.sh --tag v1.0.1        # 指定版本标签
@@ -465,7 +465,7 @@ dist\StoryForge\
 
 ## 5. 构建与验证记录
 
-已在本机完成的验证（均在 `app/` 目录下执行）：
+已在本机完成的验证（均在仓库根目录执行）：
 
 | 项 | 命令 | 结果 |
 |---|---|---|
@@ -518,7 +518,7 @@ dist\StoryForge\
 > 剔除 PG 18 新增的 `\restrict` / `\unrestrict` 元命令后生成 2781 行基线。
 > 验证：在临时库 `storyforge_baseline_test` 执行基线后与源库做四维比对——**33 表 / 526 列 / 109 索引 / 441 约束完全一致**；
 > 现有库删掉 `flyway_schema_history` 后重启，日志为 `baselined schema with version: 1` + `No migration necessary`，
-> 数据零变化（4 用户 / 3 小说 / 17 章 / 125 条用量），接口回归正常。全库备份见 `app/data/backup/`。
+> 数据零变化（4 用户 / 3 小说 / 17 章 / 125 条用量），接口回归正常。全库备份见 `data/backup/`。
 >
 > ✅ **多数据库方言适配**（2026-10-23，无新迁移）：PostgreSQL 专有语法全部清除——`ILIKE` 改为
 > `LOWER(col) LIKE LOWER(CONCAT(...))`、`INTERVAL '1 day'` 改为 Java 侧算开区间上界、`now()` 改为调用方传参、
@@ -609,7 +609,7 @@ java -jar target/app.jar
 - **数据库变更**：一律通过 `src/main/resources/db/migration/{postgresql,mysql,sqlite}/V*.sql`（Flyway），禁止手工改表。
   当前每种数据库下只有一份 **`V1__baseline.sql`**——它由原来的 V1~V26 共 26 个增量脚本合并而成（2026-10-23），
   是全库结构的唯一基线。**禁止修改该文件的结构内容**；任何变更请新增 `V2__xxx.sql`、`V3__xxx.sql`……
-  历史上的 V1..V26 脚本已归档到 `app/data/backup/migrations-v1-v26/`，仅供追溯，不再参与执行。
+  历史上的 V1..V26 脚本已归档到 `data/backup/migrations-v1-v26/`，仅供追溯，不再参与执行。
   已有库（曾经跑过 V1..V26）通过 `spring.flyway.baseline-version=1` 接管：删掉 `flyway_schema_history` 后重启，
   Flyway 会写入一条 BASELINE 记录并跳过 V1 的执行，不会重复建表；全新库则正常执行基线。
   **MySQL / SQLite 两份基线由 `node script/db/gen-baseline.mjs` 从 PostgreSQL 版派生，禁止手工编辑**；
