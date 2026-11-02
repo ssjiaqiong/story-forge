@@ -174,7 +174,12 @@
             <div class="mo-head">
               <span class="mo-index">总纲 {{ item.sortNo }}</span>
               <span class="mo-title">{{ item.title }}</span>
-              <el-tag size="small" effect="plain">{{ item.chapterCount }} 条大纲</el-tag>
+              <el-tag v-if="item.status" size="small" effect="dark" :type="masterStatusTagType(item.status)">
+                {{ masterStatusLabel(item.status) }}
+              </el-tag>
+              <el-tag size="small" effect="plain" :type="masterPlanTagType(item)">
+                已排 {{ item.chapterCount }} / 预计 {{ item.plannedOutlines || '未规划' }}
+              </el-tag>
             </div>
             <p class="mo-content">{{ item.content || '还没有内容' }}</p>
             <div class="mo-actions">
@@ -1451,7 +1456,7 @@
             <el-option
               v-for="item in masterOutlines"
               :key="item.id"
-              :label="`总纲 ${item.sortNo} · ${item.title}`"
+              :label="`总纲 ${item.sortNo} · ${item.title}（已排 ${item.chapterCount} / 预计 ${item.plannedOutlines || '未规划'}）`"
               :value="item.id"
             />
           </el-select>
@@ -1476,6 +1481,18 @@
       <el-form label-width="70px">
         <el-form-item label="标题" required>
           <el-input v-model="masterOutlineDialog.title" maxlength="200" placeholder="如：第一幕 落难与激活" />
+        </el-form-item>
+        <el-form-item label="预计大纲">
+          <div class="mo-plan-field">
+            <el-input-number
+              v-model="masterOutlineDialog.plannedOutlines"
+              :min="0"
+              :max="500"
+              controls-position="right"
+              class="mo-plan-input"
+            />
+            <span class="ai-hint">这一段预计拆多少条章节大纲，只作参考不是硬上限；0 表示未规划，「按此生成大纲」会以它为准预填章数</span>
+          </div>
         </el-form-item>
         <el-form-item label="内容">
           <el-input
@@ -1811,7 +1828,7 @@
             <el-option
               v-for="item in masterOutlines"
               :key="item.id"
-              :label="`总纲 ${item.sortNo} · ${item.title}`"
+              :label="`总纲 ${item.sortNo} · ${item.title}（已排 ${item.chapterCount} / 预计 ${item.plannedOutlines || '未规划'}）`"
               :value="item.id"
             />
           </el-select>
@@ -2702,7 +2719,8 @@ const masterOutlineDialog = reactive({
   visible: false,
   id: '',
   title: '',
-  content: ''
+  content: '',
+  plannedOutlines: undefined as number | undefined
 })
 const masterOutlineAiDialog = reactive({
   visible: false,
@@ -3746,7 +3764,26 @@ function openMasterOutlineDialog(item?: MasterOutlineVO) {
   masterOutlineDialog.id = item?.id || ''
   masterOutlineDialog.title = item?.title || ''
   masterOutlineDialog.content = item?.content || ''
+  masterOutlineDialog.plannedOutlines = item?.plannedOutlines || undefined
   masterOutlineDialog.visible = true
+}
+
+/** 总纲卡片上的「已排 / 预计」标签：排超了给橙色，没规划给灰色 */
+function masterPlanTagType(item: MasterOutlineVO) {
+  if (!item.plannedOutlines) return 'info'
+  return item.chapterCount > item.plannedOutlines ? 'warning' : 'success'
+}
+
+function masterStatusLabel(status?: string) {
+  if (status === 'RUNNING') return '进行中'
+  if (status === 'DONE') return '已完成'
+  return '未开始'
+}
+
+function masterStatusTagType(status?: string) {
+  if (status === 'RUNNING') return 'warning'
+  if (status === 'DONE') return 'success'
+  return 'info'
 }
 
 async function submitMasterOutline() {
@@ -3758,7 +3795,8 @@ async function submitMasterOutline() {
   try {
     const payload = {
       title: masterOutlineDialog.title.trim(),
-      content: masterOutlineDialog.content.trim()
+      content: masterOutlineDialog.content.trim(),
+      plannedOutlines: masterOutlineDialog.plannedOutlines ?? 0
     }
     if (masterOutlineDialog.id) {
       await updateMasterOutline(masterOutlineDialog.id, payload)
@@ -3839,10 +3877,15 @@ function openChapterDetail(chapter: ChapterVO) {
 /* ---------- AI 生成大纲 ---------- */
 function openAiOutlineDialog(masterOutlineId?: string) {
   const last = chapters.value.length ? chapters.value[chapters.value.length - 1] : null
+  const master = masterOutlineId
+    ? masterOutlines.value.find((item) => item.id === masterOutlineId) || null
+    : null
   aiOutlineDialog.prompt = ''
   aiOutlineDialog.volumeNo = last?.volumeNo || 1
   aiOutlineDialog.volumeTitle = last?.volumeTitle || ''
-  aiOutlineDialog.chapterCount = 5
+  // 按总纲的预计大纲数量预填：只补还没排的那部分，避免一次把整段铺满
+  const remain = master?.plannedOutlines ? master.plannedOutlines - master.chapterCount : 0
+  aiOutlineDialog.chapterCount = remain > 0 ? Math.min(remain, 20) : 5
   aiOutlineDialog.participantIds = []
   aiOutlineDialog.masterOutlineId = masterOutlineId || ''
   aiOutlineElapsed.value = 0
@@ -6072,6 +6115,19 @@ function roleType(value?: string) {
   font-size: 15px;
   font-weight: 600;
   color: var(--sf-text-primary);
+}
+
+/* 总纲的「预计大纲数量」编辑项：数字框固定宽，说明文字跟在后面不换行挤成一坨 */
+.mo-plan-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.mo-plan-input {
+  width: 120px;
+  flex: none;
 }
 
 .mo-content {
