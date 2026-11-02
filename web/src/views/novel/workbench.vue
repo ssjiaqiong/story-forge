@@ -34,6 +34,14 @@
         <el-button type="primary" plain size="small" @click="goAutoWrite">前往自动写书</el-button>
       </div>
 
+      <!-- 伏笔台账 -->
+      <ForeshadowPanel
+        v-show="activeMenu === 'foreshadow'"
+        :novel-id="novelId"
+        :locked="autoWriteLocked"
+        :active="activeMenu === 'foreshadow'"
+      />
+
       <!-- 自动写书 -->
       <AutoWritePanel
         v-show="activeMenu === 'autoWrite'"
@@ -1497,6 +1505,7 @@
       v-model="chapterDetail.visible"
       :chapter-id="chapterDetail.id"
       :master-title="chapterDetail.masterTitle"
+      :locked="autoWriteLocked"
     />
 
     <!-- AI 生成总纲弹窗 -->
@@ -2455,7 +2464,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Aim, ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, Edit, EditPen, Files, FirstAidKit, Loading, Lock, MagicStick, MoreFilled, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
+import { Aim, ArrowLeft, Calendar, ChatDotRound, Clock, Collection, Connection, DataAnalysis, Document, Download, Edit, EditPen, Files, FirstAidKit, Flag, Loading, Lock, MagicStick, MoreFilled, Notebook, OfficeBuilding, Plus, Reading, Refresh, User, VideoPause } from '@element-plus/icons-vue'
 import {
   exportNovelTxt,
   getNovelDetail,
@@ -2468,6 +2477,7 @@ import type { NovelVO } from '@/api/novel'
 import RelationGraph from './components/RelationGraph.vue'
 import SearchSources from './components/SearchSources.vue'
 import AutoWritePanel from './components/AutoWritePanel.vue'
+import ForeshadowPanel from './components/ForeshadowPanel.vue'
 import ChangeHistoryDrawer from './components/ChangeHistoryDrawer.vue'
 import ChapterVersionDrawer from './components/ChapterVersionDrawer.vue'
 import ChapterReviseDialog from './components/ChapterReviseDialog.vue'
@@ -2579,6 +2589,7 @@ const MENUS = [
   { key: 'content', label: '正文', icon: Reading },
   { key: 'analysis', label: '分析', icon: DataAnalysis },
   { key: 'consistency', label: '体检', icon: FirstAidKit },
+  { key: 'foreshadow', label: '伏笔', icon: Flag },
   { key: 'autoWrite', label: '自动写书', icon: Clock }
 ]
 
