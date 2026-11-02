@@ -63,7 +63,14 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class AiContentService {
 
-    private static final int TIMEOUT_MS = 300_000;
+    /**
+     * 正文生成的超时下限。
+     *
+     * <p>1.3.0 起提示词带了四层上下文（总预算 8000 字），输入本身就有上万 token，
+     * 再叠上模型按 max_tokens 上限一路写满，300 秒会整章超时——线上表现为「一直转圈然后失败」。
+     * 这里放宽到 600 秒（{@code OpenAiClient} 的硬上限也是 600 秒）。</p>
+     */
+    private static final int TIMEOUT_MS = 600_000;
     private static final int DEFAULT_TARGET_WORDS = 2500;
     private static final int MAX_TARGET_WORDS = 6000;
     private static final int MIN_TARGET_WORDS = 300;
