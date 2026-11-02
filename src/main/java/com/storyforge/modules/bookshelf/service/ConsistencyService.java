@@ -119,6 +119,7 @@ public class ConsistencyService {
     private final ChapterAnalysisMapper chapterAnalysisMapper;
     private final SettingDocMapper settingDocMapper;
     private final ConsistencyIssueMapper issueMapper;
+    private final com.storyforge.modules.bookshelf.mapper.ForeshadowMapper foreshadowMapper;
 
     private final ConsistencyRuleChecker ruleChecker;
     private final AiSceneEndpointResolver endpointResolver;
@@ -159,7 +160,7 @@ public class ConsistencyService {
         List<ConsistencyDraft> drafts = ruleChecker.check(chapters,
                 loadCharacters(novelId), loadItems(novelId), loadEvents(novelId),
                 loadChapterCharacters(novelId), loadChapterEvents(novelId),
-                loadLifeChanges(novelId), loadAnalyzedChapterIds(novelId));
+                loadLifeChanges(novelId), loadAnalyzedChapterIds(novelId), loadForeshadows(novelId));
         int saved = persist(novelId, runId, drafts, UserContextHolder.requireUserId(), new HashSet<>());
         log.info("[consistency] rules done novelId={} runId={} issues={}", novelId, runId, saved);
         return loadIssues(novelId, null, null, runId);
@@ -233,7 +234,8 @@ public class ConsistencyService {
             List<ConsistencyDraft> drafts = new ArrayList<>(ruleChecker.check(allChapters,
                     loadCharacters(task.novelId), loadItems(task.novelId), loadEvents(task.novelId),
                     loadChapterCharacters(task.novelId), loadChapterEvents(task.novelId),
-                    loadLifeChanges(task.novelId), loadAnalyzedChapterIds(task.novelId)));
+                    loadLifeChanges(task.novelId), loadAnalyzedChapterIds(task.novelId),
+                    loadForeshadows(task.novelId)));
             task.ruleCount = persist(task.novelId, task.runId, drafts, task.userId, task.seen);
             task.percent = Math.min(50, 10 + task.blockDone * 40 / Math.max(1, task.blockTotal));
 
@@ -748,6 +750,14 @@ public class ConsistencyService {
                 .eq(ChangeHistoryEntity::getEntityType, "CHARACTER")
                 .eq(ChangeHistoryEntity::getFieldKey, "lifeStatus")
                 .orderByAsc(ChangeHistoryEntity::getChapterNo));
+    }
+
+    /** R9 用：全书伏笔台账（含已回收，由规则自己筛状态） */
+    private java.util.List<com.storyforge.modules.bookshelf.entity.ForeshadowEntity> loadForeshadows(Long novelId) {
+        return foreshadowMapper.selectList(
+                com.baomidou.mybatisplus.core.toolkit.Wrappers
+                        .<com.storyforge.modules.bookshelf.entity.ForeshadowEntity>lambdaQuery()
+                        .eq(com.storyforge.modules.bookshelf.entity.ForeshadowEntity::getNovelId, novelId));
     }
 
     private Set<Long> loadAnalyzedChapterIds(Long novelId) {

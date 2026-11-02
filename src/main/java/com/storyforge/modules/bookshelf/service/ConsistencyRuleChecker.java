@@ -6,6 +6,7 @@ import com.storyforge.modules.bookshelf.entity.ChapterCharacterEntity;
 import com.storyforge.modules.bookshelf.entity.ChapterEntity;
 import com.storyforge.modules.bookshelf.entity.ChapterEventEntity;
 import com.storyforge.modules.bookshelf.entity.CharacterEntity;
+import com.storyforge.modules.bookshelf.entity.ForeshadowEntity;
 import com.storyforge.modules.bookshelf.entity.ItemEntity;
 import com.storyforge.modules.bookshelf.entity.TimelineEventEntity;
 import org.springframework.stereotype.Component;
@@ -39,6 +40,8 @@ public class ConsistencyRuleChecker {
     private static final int MAX_DETAIL = 800;
     private static final int MAX_EVIDENCE = 400;
     private static final int MAX_TITLE = 120;
+    /** 伏笔计划未定回收章时的默认周期：埋设章之后这么多章还没收就算超期 */
+    private static final int DEFAULT_PAYOFF_CHAPTERS = 30;
 
     /**
      * 跑一遍全部规则。
@@ -59,7 +62,8 @@ public class ConsistencyRuleChecker {
                                         List<ChapterCharacterEntity> chapterCharacters,
                                         List<ChapterEventEntity> chapterEvents,
                                         List<ChangeHistoryEntity> lifeChanges,
-                                        Set<Long> analyzedChapterIds) {
+                                        Set<Long> analyzedChapterIds,
+                                        List<ForeshadowEntity> foreshadows) {
         List<ConsistencyDraft> found = new ArrayList<>();
         Map<Long, ChapterEntity> chapterById = new HashMap<>();
         for (ChapterEntity chapter : chapters) {
@@ -101,12 +105,61 @@ public class ConsistencyRuleChecker {
         checkOutlineGap(found, chapters);
         checkArchiveGap(found, chapters, analyzedChapterIds);
         checkDangling(found, chapterCharacters, chapterEvents, characterById, eventById, chapterById);
+        checkForeshadowOverdue(found, foreshadows, chapters);
         return found;
     }
 
     /* ------------------------------------------------------------------ */
-    /* 八条规则                                                            */
+    /* 九条规则                                                            */
     /* ------------------------------------------------------------------ */
+
+    /**
+     * R9 伏笔超期：第 5 章埋的线，说是第 15 章收，写到第 20 章还没动静。
+     *
+     * <p>这是「读者觉得烂尾」的第一大来源，而它以前根本查不出来——伏笔只写在提示词要求里，
+     * 没有台账，埋了多少、收了哪些全靠记忆。现在有台账，就能算超期。</p>
+     *
+     * <p>只报 {@code P2}：超期不等于写错，作者可能是故意拖到后面一起收，
+     * 所以只提示、不阻断自动写书。</p>
+     */
+    private void checkForeshadowOverdue(List<ConsistencyDraft> found, List<ForeshadowEntity> foreshadows,
+                                        List<ChapterEntity> chapters) {
+        if (foreshadows == null || foreshadows.isEmpty()) {
+            return;
+        }
+        int latest = 0;
+        for (ChapterEntity chapter : chapters) {
+            if (chapter.getChapterNo() != null && chapter.getChapterNo() > latest) {
+                latest = chapter.getChapterNo();
+            }
+        }
+        if (latest <= 0) {
+            return;
+        }
+        for (ForeshadowEntity item : foreshadows) {
+            if (!ForeshadowEntity.STATUS_OPEN.equals(item.getStatus())) {
+                continue;
+            }
+            Integer planted = item.getPlantedChapterNo();
+            if (planted == null || planted >= latest) {
+                continue;
+            }
+            Integer planned = item.getPlannedPayoffChapter();
+            int dueAt = planned != null && planned > 0 ? planned : planted + DEFAULT_PAYOFF_CHAPTERS;
+            if (latest <= dueAt) {
+                continue;
+            }
+            int overdue = latest - dueAt;
+            String title = item.getTitle() == null ? "（未命名伏笔）" : item.getTitle();
+            found.add(new ConsistencyDraft("RULE", item.getPlantedChapterId(), planted, null,
+                    "FORESHADOW", "P2",
+                    clip("伏笔「" + title + "」已超期 " + overdue + " 章未回收", MAX_TITLE),
+                    clip("第 " + planted + " 章埋下，计划第 " + dueAt + " 章回收；目前写到第 " + latest
+                            + " 章，已经超了 " + overdue + " 章。读者会记得这条线，一直不收会被当成烂尾。", MAX_DETAIL),
+                    clip("第 " + planted + " 章埋设，计划第 " + dueAt + " 章回收，当前最新第 " + latest + " 章", MAX_EVIDENCE),
+                    "在近期章节里给它一个交代，或到「伏笔」页把它标记为已回收 / 放弃。"));
+        }
+    }
 
     /** R1 已故 / 失踪人物在之后出场。 */
     private void checkCharacterState(List<ConsistencyDraft> found,
