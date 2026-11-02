@@ -68,6 +68,9 @@ public class ChapterAnalysisPromptBuilder {
                 - 人物姓名必须与「已有角色」逐字一致；只有真正首次出场的陌生人才放进 newCharacters。
                 - 只被提到名字、没有台词也没有动作的人，不算出场，不算新人物。
                 - 一个字段一条记录：同一角色死了又换了身份，就写两条。
+                - **计划与事实分开**：factSummary 写的是「已经发生的结果」，不是「这一章打算写什么」。
+                  正文与本章大纲不一致时，一律以正文为准——大纲是作者的打算，正文才是读者看到的东西。
+                  正文没有交代的事，不要替作者补上，也不要写「后来……」这类后续推测。
                 """;
     }
 
@@ -80,7 +83,8 @@ public class ChapterAnalysisPromptBuilder {
                              List<FactionEntity> factions,
                              Map<Long, String> factionNames,
                              List<com.storyforge.modules.bookshelf.entity.CharacterAttributeEntity> attributes,
-                             List<com.storyforge.modules.bookshelf.entity.CharacterInventoryEntity> inventories) {
+                             List<com.storyforge.modules.bookshelf.entity.CharacterInventoryEntity> inventories,
+                             List<com.storyforge.modules.bookshelf.entity.ForeshadowEntity> openForeshadows) {
         StringBuilder builder = new StringBuilder();
         builder.append("【作品】").append(nullToEmpty(novelTitle));
         if (hasText(genre)) {
@@ -181,6 +185,19 @@ public class ChapterAnalysisPromptBuilder {
 
         builder.append("\n【本章正文】\n").append(nullToEmpty(chapter.getContent())).append('\n');
 
+        builder.append("\n【已有伏笔】标题｜埋设章｜计划回收章（只用于判断本章回收了哪条，不要重复登记）\n");
+        if (openForeshadows == null || openForeshadows.isEmpty()) {
+            builder.append("（暂无未回收伏笔）\n");
+        } else {
+            for (com.storyforge.modules.bookshelf.entity.ForeshadowEntity foreshadow : openForeshadows) {
+                builder.append("- ").append(nullToEmpty(foreshadow.getTitle()))
+                        .append('｜').append(foreshadow.getPlantedChapterNo() == null ? "?" : foreshadow.getPlantedChapterNo())
+                        .append('｜').append(foreshadow.getPlannedPayoffChapter() == null ? "未定"
+                                : foreshadow.getPlannedPayoffChapter())
+                        .append('\n');
+            }
+        }
+
         builder.append("""
 
                 【任务】读完本章，输出四类登记信息。
@@ -208,8 +225,27 @@ public class ChapterAnalysisPromptBuilder {
                    此时不要再报一次数量；东西还在身上只是数量变了，就还是只写数字。
                 每条记录都要有 reason（不超过 40 字）与 evidence（正文原句，不超过 60 字）。
 
+                ——— 以下是「叙事层」的四类，写给**下一章的作者**看 ———
+                8. factSummary：本章**实际发生了什么**，150~250 字。这是全书后续章节理解前情的唯一依据，
+                   必须写成陈述句，按时间顺序讲清：谁、做了什么、结果如何、留下了什么没解决的问题。
+                   禁止写成「本章将……」「计划……」「即将……」这类大纲语气；
+                   禁止复述本章大纲（大纲写的是打算，这里写的是结果）；禁止评价好坏、禁止形容词堆砌。
+                   如果正文的结果与大纲不一致，**以正文为准**——这正是这条记录存在的意义。
+                9. characterStates：本章结束时状态**发生变化**的角色。姓名必须与「已有角色」逐字一致。
+                   location 写所在地点（不超过 20 字）；condition 写身体/精神状况（如「左臂骨折，失血过多」）；
+                   mood 写情绪底色（可空）；knowsAdded 写本章新得知的信息（每条不超过 30 字，最多 3 条）；
+                   knowsHidden 写本章被隐瞒、或角色误信的信息（同上）。
+                   没有变化的角色不要出现；只出场一次、没留下任何状态的配角也可以不写。
+                10. foreshadowPlanted：本章**新埋**的伏笔。title 一句话（不超过 20 字，如「母亲留下的铜钥匙」）；
+                    content 写读者应该记住什么、它将来会有什么用（不超过 60 字）；
+                    plannedPayoffChapter 填计划在第几章回收，作者没规划就填 0。
+                    已经埋在「已有伏笔」里的，不要重复登记。随手提一句的环境描写不算伏笔。
+                11. foreshadowPaid：本章**回收**的伏笔，title 必须与「已有伏笔」逐字一致；
+                    evidence 写正文里兑现它的原句（不超过 60 字）。只是又提了一次不算回收，要真的交代了结果。
+
                 【输出 JSON】
                 {
+                  "factSummary": "沈氏在渡口见到陈砚，用半枚铜钱换到去往青塘的船位。登船前她发现有人在岸上盯梢，故意把行李落在船上引开对方，结果行李被抢，里面藏着的那封旧信也因此落入对方手中。船开后陈砚才告诉她，抢行李的人是他安排的。",
                   "newCharacters": [
                     {"name": "沈九", "identity": "渡口船工", "rolePos": "MINOR", "gender": "男",
                      "ageDesc": "四十上下", "appearance": "左手缺一指，常穿油布褂",
@@ -239,9 +275,21 @@ public class ChapterAnalysisPromptBuilder {
                   "inventoryChanges": [
                     {"name": "陈砚", "field": "铜钱", "after": "30",
                      "reason": "渡船花掉二十枚", "evidence": "袋子里只剩薄薄一层"}
+                  ],
+                  "characterStates": [
+                    {"name": "沈氏", "location": "青塘渡船上", "condition": "右手被绳索磨破，轻微发热",
+                     "mood": "强作镇定", "knowsAdded": ["陈砚安排了抢行李的人", "旧信已经泄给盯梢者"],
+                     "knowsHidden": ["陈砚其实知道信里写的是什么"]}
+                  ],
+                  "foreshadowPlanted": [
+                    {"title": "被抢走的旧信", "content": "信里提到青塘的一处旧宅，后面会是找到父亲下落的关键",
+                     "plannedPayoffChapter": 0}
+                  ],
+                  "foreshadowPaid": [
+                    {"title": "母亲留下的铜钥匙", "evidence": "她把铜钥匙插进锁孔，门开了"}
                   ]
                 }
-                没有内容的类别输出空数组 []，不要省略字段。
+                没有内容的类别输出空数组 []，不要省略字段；factSummary 必须是一段非空文字。
                 """);
         return builder.toString();
     }

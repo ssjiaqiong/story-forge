@@ -16,11 +16,14 @@ import com.storyforge.modules.bookshelf.entity.ItemEntity;
 import com.storyforge.modules.bookshelf.entity.TimelineEventEntity;
 import com.storyforge.modules.bookshelf.mapper.ChapterAnalysisMapper;
 import com.storyforge.modules.bookshelf.mapper.ChapterEventMapper;
+import com.storyforge.modules.bookshelf.mapper.ChapterMapper;
 import com.storyforge.modules.bookshelf.mapper.ChangeHistoryMapper;
 import com.storyforge.modules.bookshelf.mapper.CharacterAttributeMapper;
 import com.storyforge.modules.bookshelf.mapper.CharacterInventoryMapper;
 import com.storyforge.modules.bookshelf.mapper.CharacterMapper;
+import com.storyforge.modules.bookshelf.mapper.CharacterStateMapper;
 import com.storyforge.modules.bookshelf.mapper.FactionMapper;
+import com.storyforge.modules.bookshelf.mapper.ForeshadowMapper;
 import com.storyforge.modules.bookshelf.mapper.ItemMapper;
 import com.storyforge.modules.bookshelf.mapper.TimelineEventMapper;
 import lombok.RequiredArgsConstructor;
@@ -60,6 +63,9 @@ public class ChapterAnalysisApplier {
     private final TimelineEventMapper timelineEventMapper;
     private final CharacterAttributeMapper characterAttributeMapper;
     private final CharacterInventoryMapper characterInventoryMapper;
+    private final ChapterMapper chapterMapper;
+    private final ForeshadowMapper foreshadowMapper;
+    private final CharacterStateMapper characterStateMapper;
     private final ObjectMapper objectMapper;
 
     @Transactional(rollbackFor = Exception.class)
@@ -115,6 +121,15 @@ public class ChapterAnalysisApplier {
         List<ChapterAnalysisVO.EventChange> events = applyEventChanges(chapter, row.getId(),
                 facts.eventChanges(), warnings);
 
+        // 叙事层：事实摘要 / 角色状态 / 伏笔。这三样是「下一章能读到什么」的来源，
+        // 与上面的档案变更分开处理——上面改的是档案，这里改的是**记忆**。
+        // 不塞进 ChapterAnalysisVO：历史 result_json 是按旧字段序列化的，
+        // 给 record 加字段会让老报告反序列化失败；这三样走独立的 /facts 接口读。
+        applyFactSummary(chapter, facts.factSummary(), warnings);
+        int stateCount = applyCharacterStates(novelId, chapter, facts.characterStates(), characterIndex, warnings);
+        int[] foreshadowCount = applyForeshadows(
+                novelId, chapter, facts.foreshadowPlanted(), facts.foreshadowPaid(), warnings);
+
         ChapterAnalysisVO report = new ChapterAnalysisVO(
                 row.getId(),
                 chapter.getId(),
@@ -153,9 +168,10 @@ public class ChapterAnalysisApplier {
         }
         analysisMapper.updateById(row);
 
-        log.info("[analysis] persisted id={} chapterId={} outline={} ai={} newChars={} changes={} events={}",
+        log.info("[analysis] persisted id={} chapterId={} outline={} ai={} newChars={} changes={} events={} states={} forePlanted={} forePaid={}",
                 row.getId(), chapter.getId(), draft.getOutlineScore(), draft.getAiScore(),
-                created.size(), changes.size(), events.size());
+                created.size(), changes.size(), events.size(),
+                stateCount, foreshadowCount[0], foreshadowCount[1]);
         return report;
     }
 
@@ -794,5 +810,187 @@ public class ChapterAnalysisApplier {
         if (value != null && !value.isBlank()) {
             target.put(key, value.trim());
         }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 叙事层：事实摘要 / 角色状态 / 伏笔                                   */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * 把本章事实摘要写回 {@code t_chapter.fact_summary}。
+     *
+     * <p>作者手工编辑过（{@code fact_source=MANUAL}）的一律不覆盖——作者的判断优先于模型。
+     * 模型没产出时不写空值，只在报告里记一条提示，免得把上一次的摘要擦掉。</p>
+     */
+    private void applyFactSummary(ChapterEntity chapter, String factSummary, List<String> warnings) {
+        if (factSummary == null || factSummary.isBlank()) {
+            warnings.add("本章事实摘要缺失：模型没有给出可用的「实际发生」摘要，下一章只能靠大纲理解前情");
+            return;
+        }
+        String value = factSummary.trim();
+        chapterMapper.update(null, Wrappers.<ChapterEntity>lambdaUpdate()
+                .eq(ChapterEntity::getId, chapter.getId())
+                .and(w -> w.isNull(ChapterEntity::getFactSource)
+                        .or()
+                        .ne(ChapterEntity::getFactSource, ChapterEntity.FACT_SOURCE_MANUAL))
+                .set(ChapterEntity::getFactSummary, value)
+                .set(ChapterEntity::getFactSource, ChapterEntity.FACT_SOURCE_AI)
+                .set(ChapterEntity::getUpdatedAt, java.time.LocalDateTime.now()));
+        chapter.setFactSummary(value);
+        chapter.setFactSource(ChapterEntity.FACT_SOURCE_AI);
+    }
+
+    /**
+     * 落角色状态快照。
+     *
+     * <p>同一章重复分析时**更新**而不是再插一条，否则时间线里同章会出现多份互相矛盾的状态。
+     * 姓名映射不到档案的整条丢弃——宁可少一条状态，也不给不存在的人建时间线。</p>
+     */
+    private int applyCharacterStates(Long novelId,
+                                     ChapterEntity chapter,
+                                     List<AnalysisFacts.CharacterState> states,
+                                     Map<String, CharacterEntity> characterIndex,
+                                     List<String> warnings) {
+        if (states == null || states.isEmpty()) {
+            return 0;
+        }
+        Long userId = UserContextHolder.requireUserId();
+        int applied = 0;
+        for (AnalysisFacts.CharacterState state : states) {
+            CharacterEntity character = characterIndex.get(nameKey(state.name()));
+            if (character == null) {
+                warnings.add("角色状态里的「" + trim(state.name()) + "」不在人物档案里，已跳过");
+                continue;
+            }
+            String location = nullIfBlank(state.location());
+            String condition = nullIfBlank(state.condition());
+            String mood = nullIfBlank(state.mood());
+            String added = joinLines(state.knowsAdded());
+            String hidden = joinLines(state.knowsHidden());
+
+            com.storyforge.modules.bookshelf.entity.CharacterStateEntity existing = characterStateMapper.selectOne(
+                    Wrappers.<com.storyforge.modules.bookshelf.entity.CharacterStateEntity>lambdaQuery()
+                            .eq(com.storyforge.modules.bookshelf.entity.CharacterStateEntity::getNovelId, novelId)
+                            .eq(com.storyforge.modules.bookshelf.entity.CharacterStateEntity::getCharacterId,
+                                    character.getId())
+                            .eq(com.storyforge.modules.bookshelf.entity.CharacterStateEntity::getChapterNo,
+                                    chapter.getChapterNo())
+                            .last("LIMIT 1"));
+            if (existing == null) {
+                com.storyforge.modules.bookshelf.entity.CharacterStateEntity entity =
+                        new com.storyforge.modules.bookshelf.entity.CharacterStateEntity();
+                entity.setUserId(userId);
+                entity.setNovelId(novelId);
+                entity.setChapterNo(chapter.getChapterNo());
+                entity.setChapterId(chapter.getId());
+                entity.setCharacterId(character.getId());
+                entity.setLocation(location);
+                entity.setConditionText(condition);
+                entity.setMood(mood);
+                entity.setKnowsAdded(added);
+                entity.setKnowsHidden(hidden);
+                entity.setDeleted(0);
+                entity.setVersion(0);
+                characterStateMapper.insert(entity);
+            } else {
+                existing.setLocation(location);
+                existing.setConditionText(condition);
+                existing.setMood(mood);
+                existing.setKnowsAdded(added);
+                existing.setKnowsHidden(hidden);
+                characterStateMapper.updateById(existing);
+            }
+            applied++;
+        }
+        return applied;
+    }
+
+    /**
+     * 落伏笔台账：先登记新埋的，再处理本章回收的。
+     *
+     * <p>标题在一本书内唯一（忽略大小写与空白），重复登记直接跳过——
+     * 模型很容易把「同一封信」在相邻几章各报一次，提示词里说了不要重复，这里再兜一次底。
+     * 回收时匹配不到标题的不报错，只记一条提示：模型可能换了叫法，作者可以从台账里手工标记。</p>
+     *
+     * @return {@code [新登记数, 本次回收数]}
+     */
+    private int[] applyForeshadows(Long novelId,
+                                   ChapterEntity chapter,
+                                   List<AnalysisFacts.ForeshadowPlanted> planted,
+                                   List<AnalysisFacts.ForeshadowPaid> paid,
+                                   List<String> warnings) {
+        Long userId = UserContextHolder.requireUserId();
+        Map<String, com.storyforge.modules.bookshelf.entity.ForeshadowEntity> index = new LinkedHashMap<>();
+        for (com.storyforge.modules.bookshelf.entity.ForeshadowEntity row : foreshadowMapper.selectList(
+                Wrappers.<com.storyforge.modules.bookshelf.entity.ForeshadowEntity>lambdaQuery()
+                        .eq(com.storyforge.modules.bookshelf.entity.ForeshadowEntity::getNovelId, novelId))) {
+            index.putIfAbsent(nameKey(row.getTitle()), row);
+        }
+
+        int plantedCount = 0;
+        if (planted != null) {
+            for (AnalysisFacts.ForeshadowPlanted item : planted) {
+                String key = nameKey(item.title());
+                if (key.isEmpty() || index.containsKey(key)) {
+                    continue;
+                }
+                com.storyforge.modules.bookshelf.entity.ForeshadowEntity entity =
+                        new com.storyforge.modules.bookshelf.entity.ForeshadowEntity();
+                entity.setUserId(userId);
+                entity.setNovelId(novelId);
+                entity.setTitle(truncate(item.title(), 200));
+                entity.setContent(nullIfBlank(item.content()));
+                entity.setPlantedChapterNo(chapter.getChapterNo());
+                entity.setPlantedChapterId(chapter.getId());
+                entity.setPlannedPayoffChapter(item.plannedPayoffChapter());
+                entity.setStatus(com.storyforge.modules.bookshelf.entity.ForeshadowEntity.STATUS_OPEN);
+                entity.setDeleted(0);
+                entity.setVersion(0);
+                foreshadowMapper.insert(entity);
+                index.put(key, entity);
+                plantedCount++;
+            }
+        }
+
+        int paidCount = 0;
+        if (paid != null) {
+            for (AnalysisFacts.ForeshadowPaid item : paid) {
+                String rawTitle = trim(item.title());
+                com.storyforge.modules.bookshelf.entity.ForeshadowEntity entity = index.get(nameKey(rawTitle));
+                if (entity == null) {
+                    warnings.add("模型说本章回收了「" + truncate(rawTitle, 40)
+                            + "」，但台账里没有这条伏笔，已跳过（可到「伏笔」页手工标记）");
+                    continue;
+                }
+                if (com.storyforge.modules.bookshelf.entity.ForeshadowEntity.STATUS_PAID.equals(entity.getStatus())) {
+                    continue;
+                }
+                entity.setStatus(com.storyforge.modules.bookshelf.entity.ForeshadowEntity.STATUS_PAID);
+                entity.setPayoffChapterNo(chapter.getChapterNo());
+                entity.setPayoffChapterId(chapter.getId());
+                foreshadowMapper.updateById(entity);
+                paidCount++;
+            }
+        }
+        return new int[]{plantedCount, paidCount};
+    }
+
+    /** {@code null} / 空串 / 全空白 → {@code null}；否则返回去空白后的原值 */
+    private String nullIfBlank(String value) {
+        String trimmed = trim(value);
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    /** 多条认知信息按行拼接（一条一行，便于前端按行渲染与人工阅读） */
+    private String joinLines(List<String> items) {
+        if (items == null || items.isEmpty()) {
+            return null;
+        }
+        String joined = items.stream()
+                .map(this::trim)
+                .filter(text -> !text.isEmpty())
+                .reduce((left, right) -> left + "\n" + right)
+                .orElse("");
+        return joined.isEmpty() ? null : joined;
     }
 }

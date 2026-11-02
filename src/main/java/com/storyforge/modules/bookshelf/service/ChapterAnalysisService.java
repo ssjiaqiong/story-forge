@@ -95,6 +95,14 @@ public class ChapterAnalysisService {
     private static final int MAX_NEW_CHARACTERS = 8;
     private static final int MAX_CHANGES_PER_TYPE = 20;
     private static final int MAX_EVENT_CHANGES = 6;
+    /** 事实摘要上限：模型要求 150~250 字，留足冗余后硬截断，防一段灌水撑爆后续提示词 */
+    private static final int MAX_FACT_SUMMARY_CHARS = 1200;
+    /** 单章最多登记多少个角色的状态变化 */
+    private static final int MAX_CHARACTER_STATES = 12;
+    /** 每个角色「已知 / 被隐瞒」各最多几条 */
+    private static final int MAX_KNOWS_PER_SIDE = 4;
+    /** 单章最多新增 / 回收多少条伏笔 */
+    private static final int MAX_FORESHADOW_PER_CHAPTER = 5;
     private static final int MAX_LIST_ITEMS = 8;
     private static final int MAX_WARNINGS = 24;
     private static final int ANALYSIS_HISTORY_LIMIT = 20;
@@ -114,6 +122,8 @@ public class ChapterAnalysisService {
     private final FactionMapper factionMapper;
     private final ChapterAnalysisMapper analysisMapper;
     private final ChangeHistoryMapper changeHistoryMapper;
+    private final com.storyforge.modules.bookshelf.mapper.ForeshadowMapper foreshadowMapper;
+    private final com.storyforge.modules.bookshelf.mapper.CharacterStateMapper characterStateMapper;
     private final AiSceneEndpointResolver endpointResolver;
     private final AiUsageService aiUsageService;
     private final ChapterAnalysisPromptBuilder promptBuilder;
@@ -174,6 +184,13 @@ public class ChapterAnalysisService {
                 characterAssetService.attributeEntities(chapter.getNovelId());
         List<com.storyforge.modules.bookshelf.entity.CharacterInventoryEntity> inventories =
                 characterAssetService.inventoryEntities(chapter.getNovelId());
+        // 未回收的伏笔要让模型看到，它才能判断「本章回收了哪条」，也才不会重复登记
+        List<com.storyforge.modules.bookshelf.entity.ForeshadowEntity> openForeshadows =
+                foreshadowMapper.selectList(Wrappers.<com.storyforge.modules.bookshelf.entity.ForeshadowEntity>lambdaQuery()
+                        .eq(com.storyforge.modules.bookshelf.entity.ForeshadowEntity::getNovelId, chapter.getNovelId())
+                        .eq(com.storyforge.modules.bookshelf.entity.ForeshadowEntity::getStatus,
+                                com.storyforge.modules.bookshelf.entity.ForeshadowEntity.STATUS_OPEN)
+                        .orderByAsc(com.storyforge.modules.bookshelf.entity.ForeshadowEntity::getPlantedChapterNo));
 
         int wordCount = WordCounts.countChinese(chapter.getContent());
         int targetWords = resolveTarget(request, chapters);
@@ -192,7 +209,7 @@ public class ChapterAnalysisService {
         AiEndpoint factEndpoint = endpoint(AiScene.SYNC_EXTRACT, 0.35D, 4000);
         AiEndpoint scoreEndpoint = endpoint(AiScene.ANALYSIS_GEN, 0.25D, 2600);
         String factPrompt = promptBuilder.factPrompt(chapter, novelTitle, genre, detail,
-                characters, items, factions, factionNames, attributes, inventories);
+                characters, items, factions, factionNames, attributes, inventories, openForeshadows);
         String scorePrompt = promptBuilder.scorePrompt(chapter, novelTitle, genre, detail, previous,
                 metrics, targetWords, minWords, maxWords);
 
@@ -594,13 +611,130 @@ public class ChapterAnalysisService {
                     text(node, "ageDesc"), text(node, "appearance"), text(node, "personality"),
                     text(node, "motivation"), text(node, "reason")));
         }
-        return new AnalysisFacts(newCharacters,
+        return new AnalysisFacts(clipText(text(root, "factSummary"), MAX_FACT_SUMMARY_CHARS),
+                newCharacters,
                 parseChanges(root, "characterChanges"),
                 parseChanges(root, "itemChanges"),
                 parseChanges(root, "factionChanges"),
                 parseEventChanges(root),
                 parseChanges(root, "attributeChanges"),
-                parseChanges(root, "inventoryChanges"));
+                parseChanges(root, "inventoryChanges"),
+                parseCharacterStates(root),
+                parseForeshadowPlanted(root),
+                parseForeshadowPaid(root));
+    }
+
+    /** 角色状态变化：只收变了的人，姓名缺失或四项全空的整条丢弃。 */
+    private List<AnalysisFacts.CharacterState> parseCharacterStates(JsonNode root) {
+        List<AnalysisFacts.CharacterState> states = new ArrayList<>();
+        for (JsonNode node : array(root, "characterStates")) {
+            if (states.size() >= MAX_CHARACTER_STATES) {
+                break;
+            }
+            String name = text(node, "name");
+            if (!hasText(name)) {
+                continue;
+            }
+            String location = clipText(text(node, "location"), 100);
+            String condition = clipText(text(node, "condition"), 200);
+            String mood = clipText(text(node, "mood"), 60);
+            List<String> added = stringList(node, "knowsAdded", MAX_KNOWS_PER_SIDE);
+            List<String> hidden = stringList(node, "knowsHidden", MAX_KNOWS_PER_SIDE);
+            if (!hasText(location) && !hasText(condition) && !hasText(mood)
+                    && added.isEmpty() && hidden.isEmpty()) {
+                continue;
+            }
+            states.add(new AnalysisFacts.CharacterState(name, location, condition, mood, added, hidden));
+        }
+        return states;
+    }
+
+    private List<AnalysisFacts.ForeshadowPlanted> parseForeshadowPlanted(JsonNode root) {
+        List<AnalysisFacts.ForeshadowPlanted> planted = new ArrayList<>();
+        for (JsonNode node : array(root, "foreshadowPlanted")) {
+            if (planted.size() >= MAX_FORESHADOW_PER_CHAPTER) {
+                break;
+            }
+            String title = clipText(text(node, "title"), 60);
+            if (!hasText(title)) {
+                continue;
+            }
+            Integer planned = null;
+            JsonNode chapterNode = node.get("plannedPayoffChapter");
+            if (chapterNode != null && chapterNode.isNumber() && chapterNode.asInt() > 0) {
+                planned = chapterNode.asInt();
+            } else if (chapterNode != null && chapterNode.isTextual()) {
+                String raw = chapterNode.asText().trim();
+                if (raw.matches("\\d+") && Integer.parseInt(raw) > 0) {
+                    planned = Integer.parseInt(raw);
+                }
+            }
+            planted.add(new AnalysisFacts.ForeshadowPlanted(title,
+                    clipText(text(node, "content"), 300), planned));
+        }
+        return planted;
+    }
+
+    private List<AnalysisFacts.ForeshadowPaid> parseForeshadowPaid(JsonNode root) {
+        List<AnalysisFacts.ForeshadowPaid> paid = new ArrayList<>();
+        for (JsonNode node : array(root, "foreshadowPaid")) {
+            if (paid.size() >= MAX_FORESHADOW_PER_CHAPTER) {
+                break;
+            }
+            String title = clipText(text(node, "title"), 60);
+            if (!hasText(title)) {
+                continue;
+            }
+            paid.add(new AnalysisFacts.ForeshadowPaid(title, clipText(text(node, "evidence"), 200)));
+        }
+        return paid;
+    }
+
+    /** 从节点的 JSON 数组里取字符串列表（也接受单个字符串），去空去重后截断。 */
+    private List<String> stringList(JsonNode node, String field, int max) {
+        if (node == null) {
+            return List.of();
+        }
+        JsonNode value = node.get(field);
+        if (value == null || value.isNull()) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        if (value.isTextual()) {
+            String single = value.asText().trim();
+            if (!single.isEmpty()) {
+                result.add(clipText(single, 120));
+            }
+            return result;
+        }
+        if (!value.isArray()) {
+            return List.of();
+        }
+        for (JsonNode item : value) {
+            if (result.size() >= max) {
+                break;
+            }
+            String text = item == null ? null : (item.isTextual() ? item.asText() : item.toString());
+            if (text == null || text.isBlank()) {
+                continue;
+            }
+            String clipped = clipText(text.trim(), 120);
+            if (!result.contains(clipped)) {
+                result.add(clipped);
+            }
+        }
+        return result;
+    }
+
+    private String clipText(String value, int max) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        return trimmed.length() <= max ? trimmed : trimmed.substring(0, max);
     }
 
     private List<AnalysisFacts.Change> parseChanges(JsonNode root, String field) {
