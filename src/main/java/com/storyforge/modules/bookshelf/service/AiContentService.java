@@ -67,11 +67,21 @@ public class AiContentService {
     private static final int DEFAULT_TARGET_WORDS = 2500;
     private static final int MAX_TARGET_WORDS = 6000;
     private static final int MIN_TARGET_WORDS = 300;
-    /** 前 10 章给完整大纲 */
-    private static final int RECENT_OUTLINE_CHAPTERS = 10;
-    /** 前 50 章给一句话概括 */
-    private static final int EARLIER_SUMMARY_CHAPTERS = 50;
     private static final int PREVIOUS_TAIL_CHARS = 500;
+    /** 近期事实层：最近几章的「实际发生了什么」全文给模型 */
+    private static final int RECENT_FACT_CHAPTERS = 5;
+    /** 远期召回：按实体名命中挑回多少条历史事实 */
+    private static final int MAX_RECALL_CHAPTERS = 8;
+    /** 单条召回事实的截断长度 */
+    private static final int RECALL_FACT_CHARS = 160;
+    /** 正文提示词总预算（汉字）；超出时优先丢召回层，永不丢本章大纲与上一章尾段 */
+    private static final int PROMPT_BUDGET_CHARS = 8000;
+    /** 当前总纲正文的截断长度 */
+    private static final int MASTER_OUTLINE_CHARS = 1200;
+    /** 后续走向：往后看几章 */
+    private static final int UPCOMING_CHAPTERS = 3;
+    /** 未回收伏笔最多注入几条 */
+    private static final int MAX_OPEN_FORESHADOWS = 10;
     private static final int MAX_PARTICIPANTS_IN_PROMPT = 12;
     private static final int MAX_ITEMS_IN_PROMPT = 12;
     private static final int MAX_FACTIONS_IN_PROMPT = 8;
@@ -121,6 +131,11 @@ public class AiContentService {
     private final NovelArchiveBootstrapService archiveBootstrapService;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
+    private final com.storyforge.modules.bookshelf.mapper.ChapterMapper chapterMapper;
+    private final com.storyforge.modules.bookshelf.mapper.MasterOutlineMapper masterOutlineMapper;
+    private final com.storyforge.modules.bookshelf.mapper.ForeshadowMapper foreshadowMapper;
+    private final com.storyforge.modules.bookshelf.mapper.CharacterStateMapper characterStateMapper;
+    private final com.storyforge.modules.bookshelf.mapper.CharacterMapper characterMapper;
 
     /**
      * 流式回调：检索完成时给一次元信息，之后每个增量给一次文本。
@@ -520,6 +535,10 @@ public class AiContentService {
             }
         }
 
+        // 这一段故事从哪里走到哪里，以及后面几章要发生什么。
+        // 没有关联总纲的手工书整段省略，不留空标题。
+        builder.append(renderArc(chapter, chapters, index));
+
         if (emit(used, "events")) {
             appendChapterEvents(builder, chapter, events);
         }
@@ -540,7 +559,9 @@ public class AiContentService {
         }
 
         if (emit(used, "previousSummary")) {
-            builder.append(renderPrevious(chapters, index));
+            // 预算按「已拼字数」算剩余，前情内部据此决定召回层还能放几条
+            builder.append(renderPrevious(chapters, index, detail.getNovel().getId(),
+                    PROMPT_BUDGET_CHARS - builder.length(), participants));
         }
 
         // 五类设定全被模板引用时不再留下一个空标题
@@ -684,7 +705,8 @@ public class AiContentService {
                 characterAssetService.inventoryByCharacter(novel.getId())));
         vars.put("items", renderItems(in.relatedItems()));
         vars.put("factions", renderFactions(in.relatedFactions(), in.participantIds()));
-        vars.put("previousSummary", renderPrevious(chapters, in.index()));
+        vars.put("previousSummary", renderPrevious(chapters, in.index(),
+                novel == null ? null : novel.getId(), PROMPT_BUDGET_CHARS, in.participants()));
         vars.put("searchResults", SearchPromptFormatter.format(search, 6));
         // 空块统一成空串，模板里的占位符直接消失，不留下空段落
         vars.replaceAll((key, value) -> value == null ? "" : value);
@@ -787,14 +809,307 @@ public class AiContentService {
         return builder.toString();
     }
 
-    private String renderPrevious(List<ChapterVO> chapters, int index) {
+    /**
+     * 前情：分四层给。
+     *
+     * <ol>
+     *   <li><b>L1 上一章尾段</b>（正文 500 字）：语气、场景、动作必须接得上；</li>
+     *   <li><b>L2 最近 5 章事实</b>：正文抽取的「实际发生了什么」，不是大纲。
+     *       这是改造前最大的缺口——以前这里读的是 {@code chapter.summary}（计划），
+     *       正文一旦偏离大纲，后面越写越像在复述一个没读过的故事；</li>
+     *   <li><b>L3 相关性召回</b>：按人物名命中从全书捞回更早的事实。
+     *       取消原来的「50 章硬截断」——第 150 章需要第 12 章的信息时，以前这里是 0；</li>
+     *   <li><b>L4 全局常驻</b>：未回收伏笔 + 出场角色的当前状态（位置 / 伤势 / 知道什么）。</li>
+     * </ol>
+     *
+     * @param remainingBudget 提示词还能用多少汉字，L3 按它决定放几条
+     */
+    private String renderPrevious(List<ChapterVO> chapters, int index, Long novelId,
+                                  int remainingBudget, List<CharacterVO> participants) {
         if (index <= 0) {
-            return "\n【前情】\n（这是全书第一章，没有前情；开篇不要写「回想当年」，直接把人放进具体处境）\n";
+            StringBuilder first = new StringBuilder();
+            first.append("\n【前情】\n（这是全书第一章，没有前情；开篇不要写「回想当年」，直接把人放进具体处境）\n");
+            appendGlobalState(first, novelId, participants, chapterNoOf(chapters, index));
+            return first.toString();
         }
+        Map<Long, String> factMap = factSummaries(novelId);
         StringBuilder builder = new StringBuilder();
-        appendRecentOutlines(builder, chapters, index);
-        appendEarlierSummary(builder, chapters, index);
         appendPreviousTail(builder, chapters.get(index - 1));
+        appendRecentFacts(builder, chapters, index, factMap);
+        appendGlobalState(builder, novelId, participants, chapterNoOf(chapters, index));
+        appendRecalledFacts(builder, chapters, index, factMap, remainingBudget);
+        return builder.toString();
+    }
+
+    private Integer chapterNoOf(List<ChapterVO> chapters, int index) {
+        if (index < 0 || index >= chapters.size()) {
+            return null;
+        }
+        return chapters.get(index).chapterNo();
+    }
+
+    /** 一次查全书的章节事实摘要：id → 事实。只取两列，不拉正文。 */
+    private Map<Long, String> factSummaries(Long novelId) {
+        if (novelId == null) {
+            return Map.of();
+        }
+        List<com.storyforge.modules.bookshelf.entity.ChapterEntity> rows =
+                chapterMapper.selectList(com.baomidou.mybatisplus.core.toolkit.Wrappers
+                        .<com.storyforge.modules.bookshelf.entity.ChapterEntity>lambdaQuery()
+                        .select(com.storyforge.modules.bookshelf.entity.ChapterEntity::getId,
+                                com.storyforge.modules.bookshelf.entity.ChapterEntity::getFactSummary)
+                        .eq(com.storyforge.modules.bookshelf.entity.ChapterEntity::getNovelId, novelId)
+                        .isNotNull(com.storyforge.modules.bookshelf.entity.ChapterEntity::getFactSummary));
+        Map<Long, String> map = new java.util.HashMap<>();
+        for (com.storyforge.modules.bookshelf.entity.ChapterEntity row : rows) {
+            if (hasText(row.getFactSummary())) {
+                map.put(row.getId(), row.getFactSummary().trim());
+            }
+        }
+        return map;
+    }
+
+    /** L2：最近几章的事实摘要；没有事实的章节回退到大纲，并明确标注「未经事实校正」。 */
+    private void appendRecentFacts(StringBuilder builder, List<ChapterVO> chapters, int index,
+                                   Map<Long, String> factMap) {
+        int from = Math.max(0, index - RECENT_FACT_CHAPTERS);
+        if (from >= index) {
+            return;
+        }
+        builder.append("\n【最近 ").append(index - from)
+                .append(" 章实际发生】（按时间顺序；这是正文里真正写了的事，不是大纲。本章必须接住最后一条留下的问题）\n");
+        for (int i = from; i < index; i++) {
+            ChapterVO item = chapters.get(i);
+            String fact = factMap.get(item.id());
+            builder.append("- 第 ").append(item.chapterNo()).append(" 章 ").append(item.title()).append("：");
+            if (hasText(fact)) {
+                builder.append(fact);
+            } else if (hasText(item.summary())) {
+                builder.append("（大纲，未经事实校正）").append(truncate(item.summary(), 220));
+            } else {
+                builder.append("（本章没有留下记录，按上一章结尾自然承接）");
+            }
+            builder.append("\n");
+        }
+    }
+
+    /**
+     * L3：相关性召回。
+     *
+     * <p>不上向量库（单机无中间件约束），用「本章出场人物名命中」做倒排：
+     * 命中人数越多排越前，同分时越近的章优先。名字太短（1 个字）的跳过，
+     * 「他」「她」这种名字会把整本书都召回。</p>
+     *
+     * <p>预算不够就少放甚至不放——这一段是四层里最先被牺牲的，
+     * 因为它提供的是「锦上添花的远记忆」，L1/L2 才是当务之急。</p>
+     */
+    private void appendRecalledFacts(StringBuilder builder, List<ChapterVO> chapters, int index,
+                                     Map<Long, String> factMap, int remainingBudget) {
+        int olderEnd = index - RECENT_FACT_CHAPTERS;
+        if (olderEnd <= 0) {
+            return;
+        }
+        Set<String> names = new LinkedHashSet<>();
+        List<EventParticipantVO> participants = chapters.get(index).participants();
+        if (participants != null) {
+            for (EventParticipantVO participant : participants) {
+                if (hasText(participant.name()) && participant.name().trim().length() >= 2) {
+                    names.add(participant.name().trim());
+                }
+            }
+        }
+        if (names.isEmpty()) {
+            return;
+        }
+        // 留给召回层的额度：总预算减去正文尾段、L2、L4 的常规占用
+        int budget = Math.max(0, remainingBudget - 2400);
+        int maxItems = Math.min(MAX_RECALL_CHAPTERS, budget / RECALL_FACT_CHARS);
+        if (maxItems <= 0) {
+            return;
+        }
+
+        List<RecalledFact> recalls = new ArrayList<>();
+        for (int i = 0; i < olderEnd; i++) {
+            ChapterVO item = chapters.get(i);
+            String fact = factMap.get(item.id());
+            String text = hasText(fact) ? fact : item.summary();
+            if (!hasText(text)) {
+                continue;
+            }
+            int hits = 0;
+            for (String name : names) {
+                if (text.contains(name)) {
+                    hits++;
+                }
+            }
+            if (hits == 0) {
+                continue;
+            }
+            // 命中数为主，距离为辅：越近的章略占优，但不足以压过多命中一个人物
+            double score = hits - (index - i) / 200.0D;
+            recalls.add(new RecalledFact(item.chapterNo(), item.title(),
+                    truncate(text, RECALL_FACT_CHARS), score));
+        }
+        if (recalls.isEmpty()) {
+            return;
+        }
+        recalls.sort(java.util.Comparator.comparingDouble(RecalledFact::score).reversed());
+        List<RecalledFact> picked = recalls.stream()
+                .limit(maxItems)
+                .sorted(java.util.Comparator.comparingInt(RecalledFact::chapterNo))
+                .toList();
+        builder.append("\n【更早的相关前情】（按本章出场人物名从全书召回，不一定是最近发生的；只用于对齐设定，不要复述）\n");
+        for (RecalledFact recall : picked) {
+            builder.append("- 第 ").append(recall.chapterNo()).append(" 章 ").append(recall.title())
+                    .append("：").append(recall.text()).append("\n");
+        }
+    }
+
+    private record RecalledFact(int chapterNo, String title, String text, double score) {
+    }
+
+    /** L4：全局常驻——未回收伏笔 + 出场角色当前状态。这两样每章都要读，且与章节远近无关。 */
+    private void appendGlobalState(StringBuilder builder, Long novelId, List<CharacterVO> participants,
+                                   Integer currentChapterNo) {
+        if (novelId == null) {
+            return;
+        }
+        if (currentChapterNo != null) {
+            List<com.storyforge.modules.bookshelf.entity.ForeshadowEntity> open = foreshadowMapper.selectList(
+                    com.baomidou.mybatisplus.core.toolkit.Wrappers
+                            .<com.storyforge.modules.bookshelf.entity.ForeshadowEntity>lambdaQuery()
+                            .eq(com.storyforge.modules.bookshelf.entity.ForeshadowEntity::getNovelId, novelId)
+                            .eq(com.storyforge.modules.bookshelf.entity.ForeshadowEntity::getStatus,
+                                    com.storyforge.modules.bookshelf.entity.ForeshadowEntity.STATUS_OPEN)
+                            .orderByAsc(com.storyforge.modules.bookshelf.entity.ForeshadowEntity::getPlantedChapterNo)
+                            .last("LIMIT " + MAX_OPEN_FORESHADOWS));
+            List<com.storyforge.modules.bookshelf.entity.ForeshadowEntity> valid = open.stream()
+                    .filter(item -> item.getPlantedChapterNo() == null
+                            || item.getPlantedChapterNo() < currentChapterNo)
+                    .toList();
+            if (!valid.isEmpty()) {
+                builder.append("\n【尚未回收的伏笔】（可以推进或部分交代，但不要在这一段就全部收完）\n");
+                for (com.storyforge.modules.bookshelf.entity.ForeshadowEntity item : valid) {
+                    builder.append("- ").append(item.getTitle())
+                            .append("（第 ").append(item.getPlantedChapterNo()).append(" 章埋）");
+                    if (hasText(item.getContent())) {
+                        builder.append("：").append(truncate(item.getContent(), 80));
+                    }
+                    builder.append("\n");
+                }
+            }
+        }
+        if (participants == null || participants.isEmpty() || currentChapterNo == null) {
+            return;
+        }
+        List<Long> ids = participants.stream()
+                .map(CharacterVO::getId)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        if (ids.isEmpty()) {
+            return;
+        }
+        List<com.storyforge.modules.bookshelf.entity.CharacterStateEntity> rows = characterStateMapper.selectList(
+                com.baomidou.mybatisplus.core.toolkit.Wrappers
+                        .<com.storyforge.modules.bookshelf.entity.CharacterStateEntity>lambdaQuery()
+                        .eq(com.storyforge.modules.bookshelf.entity.CharacterStateEntity::getNovelId, novelId)
+                        .in(com.storyforge.modules.bookshelf.entity.CharacterStateEntity::getCharacterId, ids)
+                        .le(com.storyforge.modules.bookshelf.entity.CharacterStateEntity::getChapterNo, currentChapterNo)
+                        .orderByAsc(com.storyforge.modules.bookshelf.entity.CharacterStateEntity::getChapterNo));
+        if (rows.isEmpty()) {
+            return;
+        }
+        // 每个角色只留章号最大的一条：状态是「覆盖」语义，不是「累加」
+        Map<Long, com.storyforge.modules.bookshelf.entity.CharacterStateEntity> latest = new LinkedHashMap<>();
+        for (com.storyforge.modules.bookshelf.entity.CharacterStateEntity row : rows) {
+            latest.put(row.getCharacterId(), row);
+        }
+        StringBuilder block = new StringBuilder();
+        for (CharacterVO participant : participants) {
+            com.storyforge.modules.bookshelf.entity.CharacterStateEntity state = latest.get(participant.getId());
+            if (state == null) {
+                continue;
+            }
+            List<String> parts = new ArrayList<>();
+            if (hasText(state.getLocation())) {
+                parts.add("位置：" + state.getLocation());
+            }
+            if (hasText(state.getConditionText())) {
+                parts.add("状态：" + state.getConditionText());
+            }
+            if (hasText(state.getMood())) {
+                parts.add("情绪：" + state.getMood());
+            }
+            if (hasText(state.getKnowsAdded())) {
+                parts.add("已知道：" + state.getKnowsAdded().replace("\n", "；"));
+            }
+            if (hasText(state.getKnowsHidden())) {
+                parts.add("蒙在鼓里：" + state.getKnowsHidden().replace("\n", "；"));
+            }
+            if (parts.isEmpty()) {
+                continue;
+            }
+            block.append("- ").append(participant.getName())
+                    .append("（截至第 ").append(state.getChapterNo()).append(" 章）")
+                    .append(String.join("｜", parts)).append("\n");
+        }
+        if (block.length() > 0) {
+            builder.append("\n【出场人物当前状态】（写到第 ").append(currentChapterNo - 1)
+                    .append(" 章为止的最新状态，本章必须从这里接着走）\n").append(block);
+        }
+    }
+
+    /**
+     * 当前总纲 + 后续走向。
+     *
+     * <p>改造前正文提示词里既没有总纲也没有后续章节（grep 命中 0），于是每章自成一体：
+     * 不知道该往哪收、不知道下一章要发生什么，伏笔埋不下去，大转折又容易提前用完。</p>
+     *
+     * <p>后续走向必须给硬禁令——模型看到「第 21 章主角被捕」很可能顺手在本章就写他被捕。</p>
+     */
+    private String renderArc(ChapterVO chapter, List<ChapterVO> chapters, int index) {
+        StringBuilder builder = new StringBuilder();
+        if (chapter.masterOutlineId() != null) {
+            com.storyforge.modules.bookshelf.entity.MasterOutlineEntity master =
+                    masterOutlineMapper.selectById(chapter.masterOutlineId());
+            if (master != null) {
+                List<ChapterVO> inArc = chapters.stream()
+                        .filter(item -> chapter.masterOutlineId().equals(item.masterOutlineId()))
+                        .toList();
+                int position = 1;
+                for (int i = 0; i < inArc.size(); i++) {
+                    if (inArc.get(i).id().equals(chapter.id())) {
+                        position = i + 1;
+                        break;
+                    }
+                }
+                builder.append("\n【当前总纲】").append(master.getTitle()).append("\n")
+                        .append(hasText(master.getContent())
+                                ? truncate(master.getContent(), MASTER_OUTLINE_CHARS)
+                                : "（这条总纲还没有正文，按本章大纲推进）")
+                        .append("\n（本章是这一段故事的第 ").append(position).append(" 章，本段已排 ")
+                        .append(inArc.size()).append(" 章；这一段要走到哪里收束，以总纲为准）\n");
+            }
+        }
+
+        List<ChapterVO> upcoming = new ArrayList<>();
+        for (int i = index + 1; i < chapters.size() && upcoming.size() < UPCOMING_CHAPTERS; i++) {
+            ChapterVO item = chapters.get(i);
+            // 已经有正文的「后续」其实已经发生，不该当未来剧透给模型
+            if (!hasText(item.content())) {
+                upcoming.add(item);
+            }
+        }
+        if (!upcoming.isEmpty()) {
+            builder.append("\n【后续走向】（以下内容**尚未发生**：本章不得把它们写成既成事实，但可以为它们铺垫）\n");
+            for (ChapterVO item : upcoming) {
+                builder.append("- 第 ").append(item.chapterNo()).append(" 章 ").append(item.title());
+                if (hasText(item.summary())) {
+                    builder.append("：").append(truncate(item.summary(), 100));
+                }
+                builder.append("\n");
+            }
+        }
         return builder.toString();
     }
 
@@ -938,42 +1253,6 @@ public class AiContentService {
                 .toList();
         if (!owned.isEmpty()) {
             builder.append("  随身携带：").append(String.join("、", owned)).append("\n");
-        }
-    }
-
-    /** 前 10 章大纲：完整摘要，让模型接住近期因果与伏笔。 */
-    private void appendRecentOutlines(StringBuilder builder, List<ChapterVO> chapters, int index) {
-        int from = Math.max(0, index - RECENT_OUTLINE_CHAPTERS);
-        builder.append("\n【前 10 章大纲】（越靠后越近，本章必须接住最后一章的未解决问题）\n");
-        for (int i = from; i < index; i++) {
-            ChapterVO item = chapters.get(i);
-            builder.append("- 第 ").append(item.chapterNo()).append(" 章 ").append(item.title());
-            if (hasText(item.summary())) {
-                builder.append("：").append(truncate(item.summary(), 220));
-            }
-            if (item.participants() != null && !item.participants().isEmpty()) {
-                builder.append("｜人物：").append(String.join("、",
-                        item.participants().stream().map(EventParticipantVO::name).toList()));
-            }
-            builder.append("\n");
-        }
-    }
-
-    /** 前 50 章概括：更早的章节只给一句，防止长期设定与人际关系打架。 */
-    private void appendEarlierSummary(StringBuilder builder, List<ChapterVO> chapters, int index) {
-        int from = Math.max(0, index - EARLIER_SUMMARY_CHAPTERS);
-        int to = Math.max(0, index - RECENT_OUTLINE_CHAPTERS);
-        if (to <= from) {
-            return;
-        }
-        builder.append("\n【更早剧情概括】（前 50 章内，每章一句；只用于对齐设定，不要复述）\n");
-        for (int i = from; i < to; i++) {
-            ChapterVO item = chapters.get(i);
-            builder.append("- 第 ").append(item.chapterNo()).append(" 章 ").append(item.title());
-            if (hasText(item.summary())) {
-                builder.append("：").append(truncate(item.summary(), 60));
-            }
-            builder.append("\n");
         }
     }
 

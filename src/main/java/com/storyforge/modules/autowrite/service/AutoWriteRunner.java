@@ -44,7 +44,9 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 自动写书流水线：一轮把「总纲 → 大纲 → 正文 → 体检 → 收尾」推进完。
@@ -87,16 +89,18 @@ public class AutoWriteRunner {
     private static final int OUTLINE_BATCH = 6;
     /** 一条总纲下大纲条数的硬上限：防模型永远说「没讲完」导致无限补 */
     private static final int MAX_OUTLINES_PER_MASTER = 40;
-    /** 正文重写次数上限（含首次） */
-    public static final int MAX_BODY_REGEN = 3;
+    /** 正文重写次数上限（含首次）：默认 2。同分布重采样第 3 次几乎无收益，省下的 token 拿去抽事实更值 */
+    public static final int MAX_BODY_REGEN = 2;
+    /** 定向修补的段落保留率下限：低于它就认为模型把整章推倒重写了，退回整章重生成一次 */
+    private static final double MIN_PATCH_KEEP_RATIO = 0.30D;
     /** AI 调用失败的重试次数（不含首次）；重试用尽即停止本轮，等下个周期 */
     private static final int AI_RETRY_TIMES = 2;
-    /** 大纲贴合度阈值：低于它就重写 */
-    public static final int OUTLINE_SCORE_THRESHOLD = 90;
+    /** 大纲贴合度参考线：低于它才考虑修补；真正的通过判定见 {@link #passOutline} */
+    public static final int OUTLINE_SCORE_THRESHOLD = 80;
     /** AI 率阈值：低于它就改写 */
     public static final int AI_SCORE_THRESHOLD = 80;
-    /** 体检间隔（章） */
-    public static final int HEALTH_INTERVAL = 10;
+    /** 体检间隔（章）：默认 5，早发现早回退，代价是多一次 AI 调用 */
+    public static final int HEALTH_INTERVAL = 5;
     /** 完结缓冲字数：距目标这么多字以内就评估收尾 */
     public static final int MARGIN_WORDS = 10000;
     /** 单轮补总纲最多调用几次 AI */
@@ -111,6 +115,16 @@ public class AutoWriteRunner {
     private static final int GENERATE_MAX_WORDS = 6000;
     /** 体检 AI 深检轮询上限（毫秒） */
     private static final long HEALTH_POLL_TIMEOUT_MS = 8 * 60 * 1000L;
+
+    /** 正文重写次数上限（可配；默认取 {@link #MAX_BODY_REGEN}） */
+    @org.springframework.beans.factory.annotation.Value("${storyforge.autowrite.max-body-regen:2}")
+    private int maxBodyRegen = MAX_BODY_REGEN;
+    /** 大纲贴合度参考线（可配；默认取 {@link #OUTLINE_SCORE_THRESHOLD}） */
+    @org.springframework.beans.factory.annotation.Value("${storyforge.autowrite.outline-score-threshold:80}")
+    private int outlineScoreThreshold = OUTLINE_SCORE_THRESHOLD;
+    /** 体检间隔章数（可配；默认取 {@link #HEALTH_INTERVAL}） */
+    @org.springframework.beans.factory.annotation.Value("${storyforge.autowrite.health-interval:5}")
+    private int healthInterval = HEALTH_INTERVAL;
 
     private final AutoWriteTaskMapper taskMapper;
     private final AutoWriteRunMapper runMapper;
@@ -212,7 +226,7 @@ public class AutoWriteRunner {
         // 4) 体检（每满 10 章一次）
         Integer hard = null;
         int completed = completedCount(novelId);
-        if (written > 0 && completed > 0 && completed % HEALTH_INTERVAL == 0) {
+        if (written > 0 && completed > 0 && completed % healthInterval == 0) {
             try {
                 hard = runHealthCheck(novelId, task);
             } catch (RuntimeException ex) {
@@ -471,10 +485,16 @@ public class AutoWriteRunner {
         List<String> misses = List.of();
         List<String> suggestions = List.of();
 
-        for (int attempt = 1; attempt <= MAX_BODY_REGEN; attempt++) {
-            String extra = attempt == 1 ? null : rewriteHint(misses, suggestions);
-            ContentGenerateResultVO generated = generateBodyWithRetry(chapterId, targetWords, extra);
-            String content = generated == null ? null : generated.content();
+        for (int attempt = 1; attempt <= maxBodyRegen; attempt++) {
+            String content;
+            if (attempt == 1) {
+                ContentGenerateResultVO generated = generateBodyWithRetry(chapterId, targetWords, null);
+                content = generated == null ? null : generated.content();
+            } else {
+                // 从第 2 次起不再整章重采样，而是在上一版上「定向修补」：
+                // 同模型同上下文重生成，期望值不变，上一版的错这一版大概率还犯。
+                content = patchBody(chapterId, targetWords, lastContent, misses, suggestions);
+            }
             ScoreResult score = analyzeScores(chapterId, targetWords);
 
             lastContent = content;
@@ -493,15 +513,15 @@ public class AutoWriteRunner {
                         chapterId, chapterNo);
                 break;
             }
-            if (score.outline() >= OUTLINE_SCORE_THRESHOLD) {
+            if (passOutline(score)) {
                 if (attempt > 1) {
-                    log.info("[auto-write] rewrite passed chapterId={} no={} attempt={}/{} outline={}",
-                            chapterId, chapterNo, attempt, MAX_BODY_REGEN, score.outline());
+                    log.info("[auto-write] patch passed chapterId={} no={} attempt={}/{} outline={} misses={}",
+                            chapterId, chapterNo, attempt, maxBodyRegen, score.outline(), score.misses().size());
                 }
                 break;
             }
-            log.info("[auto-write] outline score {} < {} , rewrite {}/{} chapterId={} no={} misses={} suggestions={}",
-                    score.outline(), OUTLINE_SCORE_THRESHOLD, attempt, MAX_BODY_REGEN,
+            log.info("[auto-write] outline score {} < {} , patch {}/{} chapterId={} no={} misses={} suggestions={}",
+                    score.outline(), outlineScoreThreshold, attempt, maxBodyRegen,
                     chapterId, chapterNo, score.misses().size(), score.suggestions().size());
         }
 
@@ -512,9 +532,9 @@ public class AutoWriteRunner {
             finalContent = bestContent;
             finalAi = bestAi;
         }
-        if (!analysisUnavailable && bestOutline >= 0 && bestOutline < OUTLINE_SCORE_THRESHOLD) {
+        if (!analysisUnavailable && bestOutline >= 0 && bestOutline < outlineScoreThreshold) {
             log.warn("[auto-write] chapter keeps low fidelity after {} attempts chapterId={} no={} best={}",
-                    MAX_BODY_REGEN, chapterId, chapterNo, bestOutline);
+                    maxBodyRegen, chapterId, chapterNo, bestOutline);
         }
 
         // 3.2 AI 率不足 → 改写一次
@@ -545,12 +565,119 @@ public class AutoWriteRunner {
     }
 
     /**
-     * 重写要求：把上一版被判定「没写到」的剧情点和修改建议明确写进提示词。
+     * 贴合度是否算过。
      *
-     * <p>没有这两样东西时重写等于掷骰子——同一条提示词反复发，模型只会换几个词重说一遍。</p>
+     * <p>旧口径是「分数 ≥90」，但评分本身来自另一个模型的主观打分，噪声 ±10 很常见，
+     * 把 90 当硬门槛等于「大部分章节都要重写」。现在的主判据是「缺失的剧情点 ≤1」，
+     * 分数只作参考线（低于参考线时，缺失点少且分数不算难看也放行）。</p>
      */
-    private String rewriteHint(List<String> misses, List<String> suggestions) {
-        StringBuilder hint = new StringBuilder("上一版没通过与本章大纲的贴合度检查，这一版必须补齐：\n");
+    private boolean passOutline(ScoreResult score) {
+        int misses = score.misses() == null ? 0 : score.misses().size();
+        return passOutline(score.outline(), misses);
+    }
+
+    private boolean passOutline(int outline, int missCount) {
+        if (outline >= outlineScoreThreshold) {
+            return true;
+        }
+        return missCount <= 1 && outline >= Math.max(60, outlineScoreThreshold - 10);
+    }
+
+    /**
+     * 定向修补：以上一版正文为底稿，只改判定没做到的地方。
+     *
+     * <p>走「按分析修改」那条链路（本来就能在现稿上改），而不是让正文模型从零重写：
+     * 整章重采样是同模型、同上下文、同样期望值，上一版犯的错这一版大概率还犯，还多花一份 2500 字。</p>
+     *
+     * <p>模型有时会"顺手"把整章重写一遍，那样就退化成重采样了。所以修补后比一次段落保留率，
+     * 保留率过低视为没按指令修补，回退成整章重写一次（只回退一次，不再循环）。</p>
+     */
+    private String patchBody(Long chapterId, int targetWords, String previous,
+                             List<String> misses, List<String> suggestions) {
+        String instruction = patchInstruction(misses, suggestions);
+        if (previous == null || previous.isBlank()) {
+            return contentOf(generateBodyWithRetry(chapterId, targetWords, instruction));
+        }
+        try {
+            ChapterReviseRequest request = new ChapterReviseRequest();
+            // 缺失点少就只动点名的段落；缺失点多才允许补写过渡
+            request.setIntensity(misses != null && misses.size() >= 3 ? "MEDIUM" : "LIGHT");
+            request.setInstruction(instruction);
+            request.setTargetWords(targetWords);
+            ChapterReviseVO revised = chapterReviseService.revise(chapterId, request);
+            String patched = revised == null ? null : revised.revisedContent();
+            if (patched == null || patched.isBlank()) {
+                log.warn("[auto-write] patch empty, fallback to regenerate chapterId={}", chapterId);
+                return contentOf(generateBodyWithRetry(chapterId, targetWords, instruction));
+            }
+            double keep = paragraphKeepRatio(previous, patched);
+            if (keep < MIN_PATCH_KEEP_RATIO) {
+                log.warn("[auto-write] patch rewrote too much (kept {}%), fallback to regenerate chapterId={}",
+                        Math.round(keep * 100), chapterId);
+                return contentOf(generateBodyWithRetry(chapterId, targetWords, instruction));
+            }
+            return patched;
+        } catch (BizException ex) {
+            log.warn("[auto-write] patch failed chapterId={} reason={}, fallback to regenerate",
+                    chapterId, ex.getMessage());
+            return contentOf(generateBodyWithRetry(chapterId, targetWords, instruction));
+        }
+    }
+
+    private String contentOf(ContentGenerateResultVO generated) {
+        return generated == null ? null : generated.content();
+    }
+
+    /**
+     * 段落保留率：修补后有多少段是"原来那段"。
+     *
+     * <p>不追求精确 diff——只要判断「模型是改了该改的几段，还是把整章推倒重写」。
+     * 用段首 16 个字符做指纹（去掉空白与标点），改写措辞但保留内容时仍然能对上。</p>
+     */
+    private double paragraphKeepRatio(String before, String after) {
+        List<String> oldParts = splitParagraphs(before);
+        if (oldParts.isEmpty()) {
+            return 1.0D;
+        }
+        Set<String> newKeys = new HashSet<>();
+        for (String part : splitParagraphs(after)) {
+            newKeys.add(paragraphKey(part));
+        }
+        int kept = 0;
+        for (String part : oldParts) {
+            if (newKeys.contains(paragraphKey(part))) {
+                kept++;
+            }
+        }
+        return (double) kept / oldParts.size();
+    }
+
+    private List<String> splitParagraphs(String text) {
+        List<String> parts = new ArrayList<>();
+        if (text == null) {
+            return parts;
+        }
+        for (String line : text.split("\\n\\s*\\n|\\r\\n\\s*\\r\\n")) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty()) {
+                parts.add(trimmed);
+            }
+        }
+        return parts;
+    }
+
+    private String paragraphKey(String paragraph) {
+        String text = paragraph.replaceAll("[\\s\\p{P}\\p{S}]", "");
+        return text.length() <= 16 ? text : text.substring(0, 16);
+    }
+
+    /**
+     * 修补指令：把上一版被判定「没写到」的剧情点和修改建议写清楚，并明确要求**只改这些**。
+     *
+     * <p>只给「漏了什么」而不给「其余保留」时，模型倾向于整章重写；两种要求必须同时给。</p>
+     */
+    private String patchInstruction(List<String> misses, List<String> suggestions) {
+        StringBuilder hint = new StringBuilder("这一版在上一版正文上修改，只改下面点名的地方：\n");
         boolean hasPoint = false;
         if (misses != null && !misses.isEmpty()) {
             hint.append("漏掉的剧情点：").append(String.join("；", head(misses, 6))).append("\n");
@@ -563,8 +690,10 @@ public class AutoWriteRunner {
         if (!hasPoint) {
             hint.append("上一版把本章大纲的关键动作写成了概述，没有落到具体场面与对话上。\n");
         }
-        hint.append("这些内容要真正发生、真正被写出来（该发生的发生、该出场的人物出场、该付的代价付掉），"
-                + "人物、设定与文风保持不变，不要用一句话交代过去。");
+        hint.append("""
+                【保留要求】没有被点名的段落原样保留：不要重写、不要调整叙述顺序、不要改人物设定与文风；
+                修改后总字数与上一版相差不超过 10%。
+                上面点名要补的内容必须真正发生、真正写出来（该出场的人物出场、该付的代价付掉），不要用一句话交代过去。""");
         return hint.toString();
     }
 
