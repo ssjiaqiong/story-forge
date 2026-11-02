@@ -31,6 +31,9 @@ public class ForeshadowRequest {
     @Schema(description = "OPEN / PAID / DROPPED；编辑时留空表示不改")
     private String status;
 
+    @Schema(description = "实际回收章号；状态为 PAID 时留空取当前最新章。补录历史书时用它指到真正回收的那一章")
+    private Integer payoffChapterNo;
+
     @Size(max = 500, message = "备注最长 500 个字符")
     private String note;
 }

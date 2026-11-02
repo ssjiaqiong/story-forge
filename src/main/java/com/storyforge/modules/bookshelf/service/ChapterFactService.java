@@ -146,15 +146,22 @@ public class ChapterFactService {
         entity.setNovelId(novelId);
         entity.setTitle(request.getTitle().trim());
         entity.setContent(trimToNull(request.getContent()));
+        int latest = latestChapterNo(novelId);
         Integer planted = request.getPlantedChapterNo();
-        entity.setPlantedChapterNo(planted != null && planted > 0 ? planted : latestChapterNo(novelId));
+        entity.setPlantedChapterNo(planted != null && planted > 0 ? planted : latest);
         entity.setPlannedPayoffChapter(normalizePayoff(request.getPlannedPayoffChapter()));
         entity.setStatus(normalizeStatus(request.getStatus(), ForeshadowEntity.STATUS_OPEN));
+        // 直接建成「已回收」时必须补回收章，否则台账显示已回收却没有回收章，
+        // 章节抽屉的「本章回收」也永远匹配不到（判定用的是 payoff_chapter_no）。
+        if (ForeshadowEntity.STATUS_PAID.equals(entity.getStatus())) {
+            Integer payoff = request.getPayoffChapterNo();
+            entity.setPayoffChapterNo(payoff != null && payoff > 0 ? payoff : latest);
+        }
         entity.setNote(trimToNull(request.getNote()));
         entity.setDeleted(0);
         entity.setVersion(0);
         foreshadowMapper.insert(entity);
-        return toVO(entity, latestChapterNo(novelId));
+        return toVO(entity, latest);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -179,17 +186,23 @@ public class ChapterFactService {
         if (request.getStatus() != null && !request.getStatus().isBlank()) {
             String status = normalizeStatus(request.getStatus(), entity.getStatus());
             if (ForeshadowEntity.STATUS_PAID.equals(status)) {
-                if (ForeshadowEntity.STATUS_PAID.equals(entity.getStatus())) {
-                    throw BizException.of(ErrorCode.PARAM_INVALID, "这条伏笔已经标记过回收了");
+                Integer payoff = request.getPayoffChapterNo();
+                if (payoff != null && payoff > 0) {
+                    entity.setPayoffChapterNo(payoff);
+                } else if (entity.getPayoffChapterNo() == null) {
+                    // 手工标记回收：没指定就取当前最新章；已经有回收章时不覆盖，
+                    // 重复点「标记已回收」是幂等的，不该报错也不该把回收章往后挪
+                    entity.setPayoffChapterNo(latestChapterNo(entity.getNovelId()));
                 }
-                // 手工标记回收：回收章取当前最新章
-                entity.setPayoffChapterNo(latestChapterNo(entity.getNovelId()));
             }
             if (ForeshadowEntity.STATUS_OPEN.equals(status)) {
                 entity.setPayoffChapterNo(null);
                 entity.setPayoffChapterId(null);
             }
             entity.setStatus(status);
+        } else if (request.getPayoffChapterNo() != null && request.getPayoffChapterNo() > 0) {
+            // 只补录回收章、不动状态
+            entity.setPayoffChapterNo(request.getPayoffChapterNo());
         }
         if (request.getNote() != null) {
             entity.setNote(trimToNull(request.getNote()));
