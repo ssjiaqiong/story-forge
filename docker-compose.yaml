@@ -15,8 +15,9 @@
 #       docker compose logs -f app      # 看启动日志
 #       docker compose down             # 停止（数据保留在 ./data）
 #
-#   换版本：改下面的 image 标签，或临时覆盖
-#       IMAGE_TAG=v1.2.5 docker compose up -d
+#   换版本：用环境变量指定标签，本文件不写死版本号
+#       IMAGE_TAG=v1.4.0 docker compose up -d
+#   默认 latest（build.sh --also-latest 推送）；生产环境建议显式指定版本
 #
 #   自定义配置：在同级目录建一个 .env（已被 .gitignore 忽略），写
 #       DB_PASSWORD=...
@@ -32,7 +33,7 @@ name: storyforge
 services:
 
   app:
-    image: ccr.ccs.tencentyun.com/jiaqiong/story-forge:${IMAGE_TAG:-v1.2.5}
+    image: ccr.ccs.tencentyun.com/jiaqiong/story-forge:${IMAGE_TAG:-latest}
     container_name: storyforge-app
     ports:
       - "${APP_PORT:-8080}:8080"

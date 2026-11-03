@@ -59,7 +59,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.0.0",
+    [string]$Version = '',
     [switch]$SkipBuild,
     [switch]$SkipWeb,
     [switch]$NoConsole,
@@ -98,7 +98,28 @@ function Fail([string]$Message) {
     exit 1
 }
 
+# 版本号唯一来源：pom.xml 的 <project><version>（跳过 parent 的 version）
+function Get-PomVersion([string]$PomPath) {
+    if (-not (Test-Path $PomPath)) { return $null }
+    try {
+        $doc = New-Object System.Xml.XmlDocument
+        $doc.Load($PomPath)
+        $ns = New-Object System.Xml.XmlNamespaceManager($doc.NameTable)
+        $ns.AddNamespace('m', 'http://maven.apache.org/POM/4.0.0')
+        $node = $doc.SelectSingleNode('/m:project/m:version', $ns)
+        if ($node) { return $node.InnerText.Trim() }
+    }
+    catch { }
+    return $null
+}
+
 Set-Location $AppHome
+
+# 版本号默认取 pom.xml，可用 -Version 显式覆盖
+if (-not $Version) {
+    $Version = Get-PomVersion (Join-Path $AppHome 'pom.xml')
+    if (-not $Version) { Fail '无法从 pom.xml 读取版本号，请用 -Version 指定' }
+}
 
 Write-Host '=============================================='
 Write-Host ' StoryForge Windows 桌面版打包'

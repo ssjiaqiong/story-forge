@@ -11,10 +11,11 @@
 #     ./script/deploy/deploy.sh restart         # 重启应用容器
 #     ./script/deploy/deploy.sh stop            # 停止（保留数据）
 #     ./script/deploy/deploy.sh psql            # 进入 PostgreSQL 交互终端
+#     ./script/deploy/deploy.sh --print-version # 只打印版本标签（v + pom.xml 版本）
 #     ./script/deploy/deploy.sh --help
 #
 #   配置：同目录 server.env（HOST / USER / KEY / REMOTE_DIR / APP_PORT / 镜像仓库）
-#   默认镜像：ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.5（见 remote/docker-compose.yml）
+#   默认镜像：<REGISTRY>/<IMAGE_NAME>:v<pom.xml 版本>（唯一来源是 pom.xml）
 #   首次部署自动生成 .env（含随机密钥）；再次部署保留远端 .env 不覆盖。
 # =============================================================================
 set -euo pipefail
@@ -23,6 +24,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_HOME="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CONFIG="${SCRIPT_DIR}/server.env"
 REMOTE_DIR_DEFAULT=/opt/storyforge
+
+# 版本号唯一来源：pom.xml
+# shellcheck source=../lib/version.sh
+. "${SCRIPT_DIR}/../lib/version.sh"
 
 # ---------- 输出 ----------
 if [ -t 1 ]; then
@@ -38,7 +43,7 @@ err()  { echo "${C_ERR}$*${C_RESET}" >&2; }
 die()  { err "错误：$*"; exit 1; }
 
 usage() {
-    sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    awk 'NR <= 2 { next } /^# ={10,}$/ { exit } { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
     exit 0
 }
 
@@ -54,6 +59,7 @@ while [ $# -gt 0 ]; do
         --from-source)   FROM_REGISTRY=0; shift ;;
         --skip-build)    SKIP_BUILD=1; shift ;;
         --image)         [ $# -ge 2 ] || die "--image 缺少参数"; IMAGE_OVERRIDE="$2"; shift 2 ;;
+        --print-version) printf 'v%s\n' "$(app_version)"; exit 0 ;;
         --help|-h)    usage ;;
         logs)         ACTION="logs"; shift
                       [ $# -gt 0 ] && { LOG_LINES="$1"; shift; } ;;
@@ -76,16 +82,11 @@ APP_PORT="${APP_PORT:-8080}"
 JAVA_OPTS="${JAVA_OPTS:--Xms128m -Xmx640m}"
 
 # ---------- 镜像仓库配置（默认部署模式） ----------
-# 与 remote/docker-compose.yml 的 image 默认值保持一致
-DEFAULT_IMAGE="ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.5"
+# 标签优先级：--image > server.env 的 IMAGE_TAG > v + pom.xml 版本
 REGISTRY="${REGISTRY:-ccr.ccs.tencentyun.com}"
 IMAGE_NAME="${IMAGE_NAME:-jiaqiong/story-forge}"
-IMAGE_TAG="${IMAGE_TAG:-v1.2.5}"
-APP_IMAGE="${IMAGE_OVERRIDE:-}"
-if [ -z "$APP_IMAGE" ]; then
-    APP_IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-fi
-[ -n "$APP_IMAGE" ] || APP_IMAGE="$DEFAULT_IMAGE"
+IMAGE_TAG="${IMAGE_TAG:-v$(app_version)}"
+APP_IMAGE="${IMAGE_OVERRIDE:-${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}}"
 
 # KEY 支持相对 server.env 所在目录的路径
 if [ -n "$KEY" ] && [[ "$KEY" != /* ]] && [[ ! "$KEY" =~ ^[A-Za-z]: ]]; then

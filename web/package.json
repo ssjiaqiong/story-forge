@@ -1,7 +1,6 @@
 {
   "name": "storyforge-web",
   "private": true,
-  "version": "1.0.0",
   "type": "module",
   "description": "StoryForge 前端（Vue 3 + Vite + TypeScript）",
   "license": "AGPL-3.0-or-later",

@@ -279,18 +279,19 @@ docker compose logs -f app        # 首次启动：Flyway 建表 + 创建初始�
 # 访问 http://localhost:8080 （admin / Admin@123456 → 首登强制改密）
 ```
 
-- 镜像 `ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.5`，换版本：
-  `IMAGE_TAG=v1.2.5 docker compose up -d`，或直接改 compose 里的 `image`
+- 镜像 `ccr.ccs.tencentyun.com/jiaqiong/story-forge`，标签由 `IMAGE_TAG` 指定（默认 `latest`）：
+  `IMAGE_TAG=v1.4.0 docker compose up -d`；生产环境建议显式指定版本，避免 `latest` 漂移
 - **版本号唯一来源是 `pom.xml` 的 `<version>`**：构建期写进产物，界面页脚、`GET /api/system/info`
-  与 `GET /actuator/info` 都读它。发版时改 pom 一处，再把 `IMAGE_TAG`（`server.env` / `deploy.sh` /
-  两处 `docker-compose`）与本节同步成同一个号；前端不存版本常量
+  与 `GET /actuator/info` 都读它。升级**只改 pom 一处**——镜像标签、部署脚本、桌面安装包
+  都由 `script/lib/version.sh`（Bash）与 `Get-PomVersion`（PowerShell）在运行时读取，
+  仓库里没有第二处需要人工同步的版本号；前端不存版本常量
 - 数据全部落在**同级** `data/`：`pg/`（数据库）、`files/`（业务文件）、`covers/`（封面）、`logs/`（日志），
   整个目录拷走即完成备份 / 迁移（已在 `.gitignore` 中）
 - 自定义配置：在同级建 `.env`（同样已 gitignore），compose 会自动读取并做变量替换
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `IMAGE_TAG` | `v1.2.5` | 镜像标签 |
+| `IMAGE_TAG` | `latest` | 镜像标签；生产建议显式指定版本 |
 | `APP_PORT` | `8080` | 对外端口 |
 | `DB_NAME` / `DB_USER` / `DB_PASSWORD` | `storyforge` / `storyforge` / `storyforge` | 数据库（容器内自动创建） |
 | `STORYFORGE_JWT_SECRET` | 内置占位值 | JWT 签名密钥，**≥ 32 字节** |

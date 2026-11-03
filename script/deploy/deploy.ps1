@@ -13,7 +13,7 @@
 #     .\script\deploy\deploy.ps1 psql
 #
 #   配置：同目录 server.env；首次部署自动生成 .env，之后保留远端 .env。
-#   默认镜像：ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.0
+#   默认镜像：<REGISTRY>/<IMAGE_NAME>:v<pom.xml 版本>（唯一来源是 pom.xml）
 # =============================================================================
 [CmdletBinding()]
 param(
@@ -38,6 +38,21 @@ function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host $m -ForegroundColor Green }
 function Warn($m) { Write-Host $m -ForegroundColor Yellow }
 function Fail($m) { Write-Host "错误：$m" -ForegroundColor Red; exit 1 }
+
+# 版本号唯一来源：pom.xml 的 <project><version>（跳过 parent 的 version）
+function Get-PomVersion([string]$PomPath) {
+    if (-not (Test-Path $PomPath)) { return $null }
+    try {
+        $doc = New-Object System.Xml.XmlDocument
+        $doc.Load($PomPath)
+        $ns = New-Object System.Xml.XmlNamespaceManager($doc.NameTable)
+        $ns.AddNamespace('m', 'http://maven.apache.org/POM/4.0.0')
+        $node = $doc.SelectSingleNode('/m:project/m:version', $ns)
+        if ($node) { return $node.InnerText.Trim() }
+    }
+    catch { }
+    return $null
+}
 
 function Invoke-Rsh([string]$RemoteCmd) {
     $all = @()
@@ -81,13 +96,17 @@ $AppPort = if ($cfg['APP_PORT']) { $cfg['APP_PORT'] } else { '8080' }
 $JavaOpts = if ($cfg['JAVA_OPTS']) { $cfg['JAVA_OPTS'] } else { '-Xms128m -Xmx640m' }
 
 # ---------- 镜像地址（默认部署模式） ----------
-# 与 remote\docker-compose.yml 的 image 默认值保持一致
-$DefaultImage = 'ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.0.0'
+# 标签优先级：-Image > 环境变量 APP_IMAGE > server.env 的 IMAGE_TAG > v + pom.xml 版本
 $Reg     = if ($cfg['REGISTRY']) { $cfg['REGISTRY'] } else { 'ccr.ccs.tencentyun.com' }
 $ImgName = if ($cfg['IMAGE_NAME']) { $cfg['IMAGE_NAME'] } else { 'jiaqiong/story-forge' }
-$ImgTag  = if ($cfg['IMAGE_TAG']) { $cfg['IMAGE_TAG'] } else { 'v1.0.0' }
+if ($cfg['IMAGE_TAG']) {
+    $ImgTag = $cfg['IMAGE_TAG']
+} else {
+    $PomVersion = Get-PomVersion (Join-Path $AppHome 'pom.xml')
+    if (-not $PomVersion) { Fail '无法从 pom.xml 读取版本号（或改用 server.env 的 IMAGE_TAG 指定）' }
+    $ImgTag = "v$PomVersion"
+}
 $AppImage = if ($Image) { $Image } elseif ($env:APP_IMAGE) { $env:APP_IMAGE } else { "${Reg}/${ImgName}:${ImgTag}" }
-if (-not $AppImage) { $AppImage = $DefaultImage }
 
 if ($Key) {
     if (-not [System.IO.Path]::IsPathRooted($Key)) { $Key = Join-Path $ScriptDir $Key }

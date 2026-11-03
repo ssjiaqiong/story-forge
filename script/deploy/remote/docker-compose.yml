@@ -6,15 +6,16 @@
 #       docker compose pull app
 #       docker compose up -d --no-build
 #
-#   换版本：改下面的 image 标签，或部署时用环境变量覆盖
-#       APP_IMAGE=ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.5 docker compose up -d
+#   换版本：部署时用环境变量覆盖，本文件不写死版本号
+#       APP_IMAGE=ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.4.0 docker compose up -d
+#   （deploy.sh 会按 pom.xml 版本自动注入 APP_IMAGE）
 #
 #   数据落 ./data/（pg / files / covers / logs），整目录可备份。
 # =============================================================================
 services:
 
   app:
-    image: ${APP_IMAGE:-ccr.ccs.tencentyun.com/jiaqiong/story-forge:v1.2.5}
+    image: ${APP_IMAGE:?APP_IMAGE 未设置：用 deploy.sh 部署会自动注入，手动部署请显式指定镜像地址}
     container_name: storyforge-app
     ports:
       - "${APP_PORT:-8080}:8080"

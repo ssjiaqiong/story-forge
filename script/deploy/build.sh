@@ -7,18 +7,20 @@
 #   本机无需安装 Docker）。加 --local 则在本机 docker 构建推送。
 #
 #   用法：
-#     ./script/deploy/build.sh                     # 构建 + 推送 ${IMAGE_TAG}
+#     ./script/deploy/build.sh                     # 构建 + 推送 v<pom.xml 版本>
 #     ./script/deploy/build.sh --skip-jar          # 复用 target/app.jar，不重新打包
-#     ./script/deploy/build.sh --tag v1.0.1        # 指定标签（默认取 server.env 的 IMAGE_TAG）
+#     ./script/deploy/build.sh --tag v1.0.1        # 指定标签（默认 v + pom.xml 版本）
 #     ./script/deploy/build.sh --also-latest       # 额外推送 latest
 #     ./script/deploy/build.sh --no-push           # 只构建镜像，不推送
 #     ./script/deploy/build.sh --no-cache          # 构建不使用缓存
 #     ./script/deploy/build.sh --local             # 在本机 docker 构建（需已装 Docker）
 #     ./script/deploy/build.sh login               # 在服务器上登录 TCR（密码从文件/环境变量读）
+#     ./script/deploy/build.sh --print-version     # 只打印版本标签（v + pom.xml 版本）
 #     ./script/deploy/build.sh --help
 #
 #   配置：同目录 server.env
-#     REGISTRY / IMAGE_NAME / IMAGE_TAG / HOST / USER / KEY / REMOTE_DIR / REGISTRY_USER
+#     REGISTRY / IMAGE_NAME / HOST / USER / KEY / REMOTE_DIR / REGISTRY_USER
+#   版本：唯一来源是 pom.xml，标签默认 v<pom 版本>；server.env 的 IMAGE_TAG 可覆盖
 #
 #   推送后即可用镜像部署：./script/deploy/deploy.sh（默认拉镜像，不编译）
 # =============================================================================
@@ -28,6 +30,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_HOME="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CONFIG="${SCRIPT_DIR}/server.env"
 SECRET_DIR="${APP_HOME}/../secret"
+
+# 版本号唯一来源：pom.xml
+# shellcheck source=../lib/version.sh
+. "${SCRIPT_DIR}/../lib/version.sh"
 
 # ---------- 输出 ----------
 if [ -t 1 ]; then
@@ -42,7 +48,7 @@ warn() { printf '%s  ! %s%s\n' "${C_WARN}" "$*" "${C_RESET}"; }
 die()  { printf '%s  ✗ %s%s\n' "${C_ERR}" "$*" "${C_RESET}" >&2; exit 1; }
 
 usage() {
-    sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    awk 'NR <= 2 { next } /^# ={10,}$/ { exit } { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
     exit 0
 }
 
@@ -62,6 +68,7 @@ while [ $# -gt 0 ]; do
         --no-cache)    NO_CACHE=1; shift ;;
         --local)       USE_LOCAL=1; shift ;;
         --tag)         [ $# -ge 2 ] || die "--tag 缺少参数"; TAG_OVERRIDE="$2"; shift 2 ;;
+        --print-version) printf 'v%s\n' "$(app_version)"; exit 0 ;;
         login)         ACTION="login"; shift ;;
         -h|--help)     usage ;;
         *) die "未知参数：$1（--help 查看用法）" ;;
@@ -75,7 +82,8 @@ done
 
 REGISTRY="${REGISTRY:-ccr.ccs.tencentyun.com}"
 IMAGE_NAME="${IMAGE_NAME:?server.env 缺少 IMAGE_NAME（形如 <命名空间>/<仓库名>）}"
-IMAGE_TAG="${TAG_OVERRIDE:-${IMAGE_TAG:-latest}}"
+# 标签优先级：--tag > server.env 的 IMAGE_TAG > v + pom.xml 版本
+IMAGE_TAG="${TAG_OVERRIDE:-${IMAGE_TAG:-v$(app_version)}}"
 REPO="${REGISTRY}/${IMAGE_NAME}"
 IMAGE="${REPO}:${IMAGE_TAG}"
 
