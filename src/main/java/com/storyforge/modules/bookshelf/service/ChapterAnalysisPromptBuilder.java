@@ -49,12 +49,13 @@ public class ChapterAnalysisPromptBuilder {
     }
 
     /** 评分的 system：优先用用户模板（含锁定输出格式），未接入时回退内置 */
-    public String scoreSystem(String novelTitle, Integer chapterNo, int targetWords) {
+    public String scoreSystem(String novelTitle, Integer chapterNo, int targetWords, String style) {
         String rendered = promptTemplateService.system(com.storyforge.modules.ai.scene.AiScene.ANALYSIS_GEN,
                 java.util.Map.of(
                         "novelTitle", novelTitle == null || novelTitle.isBlank() ? "这本书" : novelTitle,
                         "chapterNo", chapterNo == null ? "-" : String.valueOf(chapterNo),
-                        "targetWords", String.valueOf(targetWords)));
+                        "targetWords", String.valueOf(targetWords),
+                        "style", style == null ? "" : style));
         return rendered.isBlank() ? scoreSystem() : rendered;
     }
 
@@ -327,7 +328,8 @@ public class ChapterAnalysisPromptBuilder {
                               AiFlavorMeter.Metrics metrics,
                               int targetWords,
                               int minWords,
-                              int maxWords) {
+                              int maxWords,
+                              String style) {
         StringBuilder builder = new StringBuilder();
         builder.append("【作品】").append(nullToEmpty(novelTitle));
         if (hasText(genre)) {
@@ -336,6 +338,10 @@ public class ChapterAnalysisPromptBuilder {
         builder.append('\n');
         builder.append("【本章】第 ").append(chapter.getChapterNo()).append(" 章 ").append(nullToEmpty(chapter.getTitle())).append('\n');
         builder.append("【本章大纲】").append(hasText(chapter.getSummary()) ? chapter.getSummary() : "（作者没有写本章大纲）").append('\n');
+        if (hasText(style)) {
+            // 判「腔调是否统一、该笑有没有笑」得先知道这本书定的是什么调；没填就不给这一块
+            builder.append("【文风基线】").append(style).append('\n');
+        }
 
         List<EventParticipantVO> participants = detail == null ? List.of() : detail.participants();
         if (participants != null && !participants.isEmpty()) {

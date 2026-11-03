@@ -19,7 +19,7 @@
         </el-col>
         <el-col :span="7">
           <div class="field-label">文风基调</div>
-          <el-input v-model="blueprint.style" maxlength="60" placeholder="如 热血爽文" />
+          <el-input v-model="blueprint.style" maxlength="80" placeholder="人称＋语言质感＋笑点来源，如：第三人称限知，市井口语，诙谐，笑点靠人物嘴硬与误会" />
         </el-col>
       </el-row>
 

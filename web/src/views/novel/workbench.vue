@@ -135,7 +135,14 @@
             <el-input v-model="settings.HIGHLIGHT" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" placeholder="每行一条" />
           </el-form-item>
           <el-form-item label="文风基调">
-            <el-input v-model="settings.STYLE" maxlength="200" />
+            <el-input
+              v-model="settings.STYLE"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 5 }"
+              maxlength="200"
+              show-word-limit
+              placeholder="人称 + 叙述距离 + 语言质感 + 笑点从哪儿来。如：第三人称限知，市井口语打底，幽默诙谐，叙述可自嘲、可插科打诨，正经处突然抖个包袱。会作为硬要求注入正文生成与章节质检"
+            />
           </el-form-item>
           <el-form-item label="创作约束">
             <el-input

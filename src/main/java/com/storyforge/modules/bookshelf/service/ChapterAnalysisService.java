@@ -169,6 +169,8 @@ public class ChapterAnalysisService {
         NovelDetailVO novelDetail = bookshelfService.detail(chapter.getNovelId());
         String novelTitle = novelDetail.getNovel() == null ? "" : novelDetail.getNovel().getTitle();
         String genre = novelDetail.getNovel() == null ? "" : novelDetail.getNovel().getGenre();
+        // 文风基线：质检要靠它判断「腔调是否统一、该笑有没有笑」，与正文生成取的是同一段设定、同一截断长度
+        String style = PromptVars.setting(novelDetail, "STYLE", 300);
 
         List<CharacterEntity> characters = characterMapper.selectList(Wrappers.<CharacterEntity>lambdaQuery()
                 .eq(CharacterEntity::getNovelId, chapter.getNovelId())
@@ -211,7 +213,7 @@ public class ChapterAnalysisService {
         String factPrompt = promptBuilder.factPrompt(chapter, novelTitle, genre, detail,
                 characters, items, factions, factionNames, attributes, inventories, openForeshadows);
         String scorePrompt = promptBuilder.scorePrompt(chapter, novelTitle, genre, detail, previous,
-                metrics, targetWords, minWords, maxWords);
+                metrics, targetWords, minWords, maxWords, style);
 
         // 事实抽取与评分并发跑在两个线程里：用量统计靠 UserContextHolder 取 user_id，
         // ThreadLocal 不会自动跨线程传递，所以每个任务自己 set / clear
@@ -232,7 +234,7 @@ public class ChapterAnalysisService {
                     UserContextHolder.set(context);
                     try {
                         return callJson(AiScene.ANALYSIS_GEN, scoreEndpoint,
-                                promptBuilder.scoreSystem(novelTitle, chapter.getChapterNo(), targetWords),
+                                promptBuilder.scoreSystem(novelTitle, chapter.getChapterNo(), targetWords, style),
                                 scorePrompt, "score");
                     } finally {
                         UserContextHolder.clear();
