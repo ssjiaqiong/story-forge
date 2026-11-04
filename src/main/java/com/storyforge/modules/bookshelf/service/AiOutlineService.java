@@ -57,6 +57,13 @@ import java.util.Set;
 public class AiOutlineService {
 
     private static final int TIMEOUT_MS = 300_000;
+    /**
+     * 大纲场景的 AI 最多尝试次数（首发 + 1 次重试）。
+     *
+     * <p>默认 3 次意味着最坏 3 × 300 秒，超出前端与 nginx 的超时，用户会以为失败而重复提交；
+     * 大纲本身输出长（20 章 JSON，两万 token），重试一次的收益也有限，压到 2 次更划算。</p>
+     */
+    private static final int AI_ATTEMPTS = 2;
     private static final int MAX_TOKENS = 8000;
     private static final int MAX_CHAPTERS = 20;
     private static final int MAX_EXISTING_DETAIL = 12;
@@ -97,80 +104,99 @@ public class AiOutlineService {
     private final NovelArchiveBootstrapService archiveBootstrapService;
     private final com.storyforge.modules.autowrite.support.AutoWriteGuard autoWriteGuard;
 
+    /**
+     * 正在生成大纲的书：同一本书同时只允许一个批次在跑。
+     *
+     * <p>大纲生成是一次长调用（单次 60~300 秒，加上重试最坏十几分钟），期间章号无从确定；
+     * 若允许并发，每个请求会各自算号并写入，产生重复章号（线上曾出现 6 个请求并发、
+     * 30 多章里 15 条重号）。这里按 novelId 做进程内互斥，重复请求直接 409。</p>
+     *
+     * <p>单实例部署足够；将来多实例需要换成数据库咨询锁或分布式锁。</p>
+     */
+    private final Map<Long, Long> runningNovels = new java.util.concurrent.ConcurrentHashMap<>();
+
     @Transactional(rollbackFor = Exception.class)
     public OutlineGenerateResultVO generate(Long novelId, OutlineGenerateRequest request) {
         autoWriteGuard.assertEditable(novelId);
-        NovelDetailVO detail = bookshelfService.detail(novelId);
-        List<ChapterVO> existing = assetService.listChapters(novelId);
-        // 「未使用」事件排在最前面：模型从上往下读，先看到可用的，认领率更高
-        List<TimelineVO> events = assetService.listTimeline(novelId).stream()
-                .sorted(java.util.Comparator.comparingInt(event -> isUnusedEvent(event) ? 0 : 1))
-                .toList();
-        List<CharacterRelationVO> relations = assetService.listRelations(novelId);
-        String requirement = request == null || request.getPrompt() == null
-                ? "" : request.getPrompt().trim();
-        if (requirement.isEmpty()) {
-            requirement = "按现有设定自然推进故事，安排有冲突、有转折、结尾留钩子的章节。";
+        // 同一本书同时只跑一个批次：并发会让每个请求各算各的章号，写出重复章节
+        if (runningNovels.putIfAbsent(novelId, System.currentTimeMillis()) != null) {
+            throw BizException.of(ErrorCode.OUTLINE_GENERATE_RUNNING);
         }
-        int count = request == null || request.getChapterCount() == null
-                ? 5 : Math.min(MAX_CHAPTERS, Math.max(1, request.getChapterCount()));
-
-        AiEndpoint base = endpointResolver.resolve(AiScene.OUTLINE_GEN);
-        AiEndpoint endpoint = new AiEndpoint(
-                base.baseUrl(),
-                base.apiKey(),
-                base.model(),
-                Math.max(base.timeoutMs(), TIMEOUT_MS),
-                base.extraHeaders(),
-                0.85D,
-                MAX_TOKENS);
-
-        long startedAt = System.currentTimeMillis();
-        boolean noUnusedEvent = events.stream().noneMatch(this::isUnusedEvent);
-        SearchBundleVO search = search(novelId, detail, requirement, request, endpoint, noUnusedEvent);
-        List<CharacterVO> forced = resolveForced(detail.getCharacters(), request);
-        MasterOutlineEntity masterOutline = resolveMasterOutline(novelId, request);
-        // 这条总纲下已经排过的大纲：模型要接着它们往后写，并判断这一段是否已经讲完
-        List<ChapterVO> masterChapters = masterOutline == null ? List.of()
-                : existing.stream()
-                .filter(item -> masterOutline.getId().equals(item.masterOutlineId()))
-                .toList();
-        String userPrompt = buildPrompt(detail, existing, events, relations, forced,
-                requirement, count, request, search, masterOutline, masterChapters,
-                promptTemplateService.usedVariables(AiScene.OUTLINE_GEN));
-        java.util.Map<String, String> promptVars = new java.util.LinkedHashMap<>();
-        var novelInfo = detail.getNovel();
-        promptVars.put("novelTitle", novelInfo == null ? "这本书" : novelInfo.getTitle());
-        promptVars.put("genre", novelInfo == null || !hasText(novelInfo.getGenre())
-                ? "通用" : novelInfo.getGenre());
-        promptVars.put("chapterCount", String.valueOf(count));
-        promptVars.put("authorRequirement", requirement);
-        PromptVars.putNovel(promptVars, novelInfo, 800);
-        PromptVars.putSettings(promptVars, detail, 1600, 1200, 600, 500, 300);
-        promptVars.put("constraints", PromptVars.constraint(detail, 1200));
-        String system = promptTemplateService.system(AiScene.OUTLINE_GEN, PromptVars.clean(promptVars));
-        if (!hasText(system)) {
-            system = SYSTEM_PROMPT;
-        }
-        ChatResult reply = chat(endpoint, system, userPrompt);
-        JsonNode root;
         try {
-            root = parse(reply.content());
-        } catch (BizException ex) {
-            if (ex.getErrorCode() != ErrorCode.AI_PARSE_FAILED) {
-                throw ex;
+            NovelDetailVO detail = bookshelfService.detail(novelId);
+            List<ChapterVO> existing = assetService.listChapters(novelId);
+            // 「未使用」事件排在最前面：模型从上往下读，先看到可用的，认领率更高
+            List<TimelineVO> events = assetService.listTimeline(novelId).stream()
+                    .sorted(java.util.Comparator.comparingInt(event -> isUnusedEvent(event) ? 0 : 1))
+                    .toList();
+            List<CharacterRelationVO> relations = assetService.listRelations(novelId);
+            String requirement = request == null || request.getPrompt() == null
+                    ? "" : request.getPrompt().trim();
+            if (requirement.isEmpty()) {
+                requirement = "按现有设定自然推进故事，安排有冲突、有转折、结尾留钩子的章节。";
             }
-            log.warn("[ai-outline] parse failed, retry once novelId={}: {}", novelId, ex.getMessage());
-            reply = chat(endpoint, system + RETRY_SUFFIX, userPrompt);
-            root = parse(reply.content());
-        }
+            int count = request == null || request.getChapterCount() == null
+                    ? 5 : Math.min(MAX_CHAPTERS, Math.max(1, request.getChapterCount()));
 
-        return persist(novelId, existing, detail.getCharacters(), events, forced, request, root, reply.model(),
-                System.currentTimeMillis() - startedAt, search, masterOutline,
-                existingNames(assetService.listItems(novelId).stream().map(ItemVO::name).toList()),
-                existingNames(factionService.list(novelId).stream().map(FactionVO::name).toList()),
-                masterOutline == null ? null : boolOf(root, "masterFinished"),
-                masterOutline == null ? null : textOf(root, "masterReason"));
+            AiEndpoint base = endpointResolver.resolve(AiScene.OUTLINE_GEN);
+            AiEndpoint endpoint = new AiEndpoint(
+                    base.baseUrl(),
+                    base.apiKey(),
+                    base.model(),
+                    Math.max(base.timeoutMs(), TIMEOUT_MS),
+                    base.extraHeaders(),
+                    0.85D,
+                    MAX_TOKENS);
+
+            long startedAt = System.currentTimeMillis();
+            boolean noUnusedEvent = events.stream().noneMatch(this::isUnusedEvent);
+            SearchBundleVO search = search(novelId, detail, requirement, request, endpoint, noUnusedEvent);
+            List<CharacterVO> forced = resolveForced(detail.getCharacters(), request);
+            MasterOutlineEntity masterOutline = resolveMasterOutline(novelId, request);
+            // 这条总纲下已经排过的大纲：模型要接着它们往后写，并判断这一段是否已经讲完
+            List<ChapterVO> masterChapters = masterOutline == null ? List.of()
+                    : existing.stream()
+                    .filter(item -> masterOutline.getId().equals(item.masterOutlineId()))
+                    .toList();
+            String userPrompt = buildPrompt(detail, existing, events, relations, forced,
+                    requirement, count, request, search, masterOutline, masterChapters,
+                    promptTemplateService.usedVariables(AiScene.OUTLINE_GEN));
+            java.util.Map<String, String> promptVars = new java.util.LinkedHashMap<>();
+            var novelInfo = detail.getNovel();
+            promptVars.put("novelTitle", novelInfo == null ? "这本书" : novelInfo.getTitle());
+            promptVars.put("genre", novelInfo == null || !hasText(novelInfo.getGenre())
+                    ? "通用" : novelInfo.getGenre());
+            promptVars.put("chapterCount", String.valueOf(count));
+            promptVars.put("authorRequirement", requirement);
+            PromptVars.putNovel(promptVars, novelInfo, 800);
+            PromptVars.putSettings(promptVars, detail, 1600, 1200, 600, 500, 300);
+            promptVars.put("constraints", PromptVars.constraint(detail, 1200));
+            String system = promptTemplateService.system(AiScene.OUTLINE_GEN, PromptVars.clean(promptVars));
+            if (!hasText(system)) {
+                system = SYSTEM_PROMPT;
+            }
+            ChatResult reply = chat(endpoint, system, userPrompt);
+            JsonNode root;
+            try {
+                root = parse(reply.content());
+            } catch (BizException ex) {
+                if (ex.getErrorCode() != ErrorCode.AI_PARSE_FAILED) {
+                    throw ex;
+                }
+                log.warn("[ai-outline] parse failed, retry once novelId={}: {}", novelId, ex.getMessage());
+                reply = chat(endpoint, system + RETRY_SUFFIX, userPrompt);
+                root = parse(reply.content());
+            }
+
+            return persist(novelId, existing, detail.getCharacters(), events, forced, request, root, reply.model(),
+                    System.currentTimeMillis() - startedAt, search, masterOutline,
+                    existingNames(assetService.listItems(novelId).stream().map(ItemVO::name).toList()),
+                    existingNames(factionService.list(novelId).stream().map(FactionVO::name).toList()),
+                    masterOutline == null ? null : boolOf(root, "masterFinished"),
+                    masterOutline == null ? null : textOf(root, "masterReason"));
+        } finally {
+            runningNovels.remove(novelId);
+        }
     }
 
     /** 档案里已有的名字：补建时用来去重，避免同一个人物 / 道具 / 组织建两份。 */
@@ -222,6 +248,20 @@ public class AiOutlineService {
     /* 落库                                                               */
     /* ------------------------------------------------------------------ */
 
+    /**
+     * 下一章的章号：取写入前库里实际的最大章号 +1，并与调用方指定的起始号取较大值。
+     *
+     * <p>为什么不用调用方传的号：自动写书会预先算好 {@code startChapterNo}，但那次计算同样
+     * 发生在 AI 调用之前；若期间用户手动排过几章，直接采用就会覆盖别人的号。取较大值意味着
+     * 「只会往后顺延，绝不倒回去撞号」——章节号出现空洞可以接受，重号不行。</p>
+     */
+    private int nextChapterNo(Long novelId, Integer requested) {
+        int actual = assetService.listChapters(novelId).stream()
+                .mapToInt(item -> item.chapterNo() == null ? 0 : item.chapterNo())
+                .max().orElse(0) + 1;
+        return requested == null ? actual : Math.max(requested, actual);
+    }
+
     private OutlineGenerateResultVO persist(Long novelId,
                                             List<ChapterVO> existing,
                                             List<CharacterVO> characters,
@@ -251,10 +291,10 @@ public class AiOutlineService {
                 .map(ChapterVO::volumeTitle)
                 .filter(this::hasText)
                 .findFirst().orElse(null);
-        int chapterNo = request != null && request.getStartChapterNo() != null
-                ? request.getStartChapterNo()
-                : existing.stream().mapToInt(item -> item.chapterNo() == null ? 0 : item.chapterNo())
-                .max().orElse(0) + 1;
+        // 章号按「此刻库里的最大章号」定，不能用 generate() 开头那份快照：
+        // AI 调用单次就要 60~300 秒（含重试最坏十几分钟），这期间别人的写入它看不到，
+        // 用旧快照算号会写出重复章节（线上曾出现多条第 1 章）。
+        int chapterNo = nextChapterNo(novelId, request == null ? null : request.getStartChapterNo());
 
         Set<String> titles = new LinkedHashSet<>();
         for (ChapterVO item : existing) {
@@ -699,10 +739,13 @@ public class AiOutlineService {
             builder.append(searchBlock);
         }
 
-        int startChapterNo = request != null && request.getStartChapterNo() != null
-                ? request.getStartChapterNo()
-                : existing.stream().mapToInt(item -> item.chapterNo() == null ? 0 : item.chapterNo())
-                .max().orElse(0) + 1;
+        // 提示词里说的起始章号，必须和 persist() 落库时用的号一致（同样取 max 而不是直接用请求值），
+        // 否则模型按「第 1 章」写的内容会被存成第 4 章，情节与章号错位
+        int requestedStart = request != null && request.getStartChapterNo() != null
+                ? request.getStartChapterNo() : 0;
+        int startChapterNo = Math.max(requestedStart, existing.stream()
+                .mapToInt(item -> item.chapterNo() == null ? 0 : item.chapterNo())
+                .max().orElse(0) + 1);
         if (PromptVars.emit(used, "authorRequirement")) {
             builder.append("\n【作者要求】\n").append(requirement).append("\n");
         }
@@ -892,7 +935,7 @@ public class AiOutlineService {
         try {
             return aiUsageService.chat(AiScene.OUTLINE_GEN, endpoint, List.of(
                     ChatMessage.system(systemPrompt),
-                    ChatMessage.user(userPrompt)));
+                    ChatMessage.user(userPrompt)), AI_ATTEMPTS);
         } catch (BizException ex) {
             throw ex;
         } catch (RuntimeException ex) {

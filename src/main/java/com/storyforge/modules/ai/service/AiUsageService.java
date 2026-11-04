@@ -49,6 +49,18 @@ public class AiUsageService {
      * 异常最终原样抛出，由调用方转成业务错误码；每次真实调用都会落一行用量流水。</p>
      */
     public ChatResult chat(AiScene scene, AiEndpoint endpoint, List<ChatMessage> messages) {
+        return chat(scene, endpoint, messages, MAX_ATTEMPTS);
+    }
+
+    /**
+     * 同上，但由调用方指定最多尝试次数。
+     *
+     * <p>给「单次就慢」的场景用：大纲生成一次要 60~300 秒，若按默认 3 次重试，
+     * 最坏耗时逼近 15 分钟，早已超过前端与 nginx 的超时，用户会误判失败而重复提交。
+     * 这类场景传 2（首发 + 1 次重试），把最坏耗时压在 10 分钟内。</p>
+     */
+    public ChatResult chat(AiScene scene, AiEndpoint endpoint, List<ChatMessage> messages, int maxAttempts) {
+        int attempts = Math.max(1, maxAttempts);
         String model = endpoint == null ? null : endpoint.model();
         int messageCount = messages == null ? 0 : messages.size();
         int messageChars = 0;
@@ -63,7 +75,7 @@ public class AiUsageService {
 
         long startedAt = System.currentTimeMillis();
         RuntimeException failure = null;
-        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
                 ChatResult result = openAiClient.chat(endpoint, messages);
                 save(scene, endpoint, result.model(), result.promptTokens(), result.completionTokens(),
@@ -77,12 +89,12 @@ public class AiUsageService {
                 String reason = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
                 save(scene, endpoint, model, 0, 0,
                         (int) Math.min(System.currentTimeMillis() - startedAt, Integer.MAX_VALUE), reason);
-                if (!isRetryable(reason) || attempt >= MAX_ATTEMPTS) {
+                if (!isRetryable(reason) || attempt >= attempts) {
                     log.error("[ai] 调用失败 scene={} model={} 原因={} 已尝试{}次", sceneLabel(scene), model, reason, attempt);
                     throw ex;
                 }
                 log.warn("[ai] 调用失败，自动重试 scene={} model={} 第{}次失败 原因={} 剩余重试{}次",
-                        sceneLabel(scene), model, attempt, reason, MAX_ATTEMPTS - attempt);
+                        sceneLabel(scene), model, attempt, reason, attempts - attempt);
                 sleepQuietly(attempt * 1000L);
             }
         }

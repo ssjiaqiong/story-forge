@@ -198,7 +198,12 @@ public class AutoWriteRunner {
         try {
             advance = advanceCurrentMaster(novelId);
         } catch (BizException ex) {
-            return RunResult.failed("补大纲失败：" + safeMessage(ex));
+            if (ex.getErrorCode() == ErrorCode.OUTLINE_GENERATE_RUNNING) {
+                // 用户正在手动排大纲：本轮不排，接着写已有的章节，下个周期再补
+                log.info("[auto-write] outline busy, skip planning this round novelId={}", novelId);
+            } else {
+                return RunResult.failed("补大纲失败：" + safeMessage(ex));
+            }
         }
         int outlineCreated = advance.created();
 

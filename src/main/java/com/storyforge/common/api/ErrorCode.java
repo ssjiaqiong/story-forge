@@ -124,6 +124,7 @@ public enum ErrorCode {
     IMPORT_TEXT_TOO_SHORT(40084, "上传的文本太短，至少需要 1000 个汉字", 400),
     IMPORT_TEXT_TOO_LONG(40085, "上传的文本超过 500 万汉字，请拆分后分次导入", 400),
     IMPORT_RUNNING(40086, "已有一个导入任务在跑，请等它结束再发起新的", 409),
+    OUTLINE_GENERATE_RUNNING(40087, "本书正在生成大纲，请等这一批结束再发起新的", 409),
 
     /* ---------- 5xxxx AI ---------- */
     AI_CALL_FAILED(50001, "AI 调用失败", 502),

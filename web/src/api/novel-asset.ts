@@ -435,9 +435,9 @@ export interface OutlineGenerateResultVO {
   newEvents?: TimelineVO[]
 }
 
-/** 一次最多 20 章，超时 5 分钟 */
+/** 一次最多 20 章，超时 10 分钟（模型输出两万 token，实测单次 60~300 秒，两次尝试最坏 600 秒） */
 export function generateOutline(novelId: string, payload: OutlineGeneratePayload) {
-  return api.post<OutlineGenerateResultVO>(`/bookshelf/novels/${novelId}/outline/generate`, payload, 300000)
+  return api.post<OutlineGenerateResultVO>(`/bookshelf/novels/${novelId}/outline/generate`, payload, 600000)
 }
 
 /* ---------------- AI 写正文 ---------------- */
