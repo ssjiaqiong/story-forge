@@ -21,6 +21,12 @@ export const ICP_NUMBER = '辽ICP备2026003747号-1'
 /** ICP 备案查询入口（工信部） */
 export const ICP_URL = 'https://beian.miit.gov.cn/'
 
+/**
+ * 官方 QQ 交流群号。
+ * 自助注册已关闭，体验账号通过该群不定期发放；换群只改这里。
+ */
+export const QQ_GROUP = '851660306'
+
 /** 外部链接统一走新窗口，noopener/noreferrer 防止被打开页面操纵本页 */
 export function openExternal(url: string): void {
   window.open(url, '_blank', 'noopener,noreferrer')

@@ -696,7 +696,7 @@ AGPL-3.0 不是放一个 LICENSE 文件就够——对外提供网络服务的�
 | 登录页底部 | 「AGPL-3.0 协议开源 · 获取源码」链接，以及常驻页脚：ICP 备案号 + 开源仓库地址 |
 | 主布局页脚（登录后所有页面底部） | 常驻页脚：ICP 备案号（链接工信部备案查询）+ 开源仓库地址 |
 | 顶栏用户菜单 | 「获取源码」「开源许可（AGPL-3.0）」两项 |
-| `web/src/config/about.ts` | `SOURCE_REPO_URL` / `LICENSE_URL` / `ICP_NUMBER` / `ICP_URL` 常量，**二次开发者只改这里** |
+| `web/src/config/about.ts` | `SOURCE_REPO_URL` / `LICENSE_URL` / `ICP_NUMBER` / `ICP_URL` / `QQ_GROUP` 常量，**二次开发者只改这里** |
 | `docker/Dockerfile`、`script/deploy/remote/Dockerfile` | OCI 标签 `org.opencontainers.image.licenses=AGPL-3.0-or-later` 与 `...image.source` 指向源码仓库 |
 | `pom.xml`、`web/package.json` | 声明 `AGPL-3.0`，供依赖分析工具识别 |
 
