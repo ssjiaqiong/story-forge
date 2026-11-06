@@ -15,7 +15,7 @@
     <groupId>com.storyforge</groupId>
     <artifactId>storyforge</artifactId>
     <!-- 版本号唯一来源：改这里即全局生效（界面页脚、/api/system/info、/actuator/info、镜像标签） -->
-    <version>1.3.5</version>
+    <version>1.3.6</version>
     <name>storyforge</name>
     <description>StoryForge - AI 长篇小说创作平台（单用户空间 / 超管平台）</description>
 
