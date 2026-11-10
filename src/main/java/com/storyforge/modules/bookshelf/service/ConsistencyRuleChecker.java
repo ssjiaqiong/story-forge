@@ -121,18 +121,16 @@ public class ConsistencyRuleChecker {
      *
      * <p>只报 {@code P2}：超期不等于写错，作者可能是故意拖到后面一起收，
      * 所以只提示、不阻断自动写书。</p>
+     *
+     * <p><b>进度口径</b>：这里的「写到第几章」只认已经有正文的章节，
+     * 见 {@link #latestWrittenChapterNo}。</p>
      */
     private void checkForeshadowOverdue(List<ConsistencyDraft> found, List<ForeshadowEntity> foreshadows,
                                         List<ChapterEntity> chapters) {
         if (foreshadows == null || foreshadows.isEmpty()) {
             return;
         }
-        int latest = 0;
-        for (ChapterEntity chapter : chapters) {
-            if (chapter.getChapterNo() != null && chapter.getChapterNo() > latest) {
-                latest = chapter.getChapterNo();
-            }
-        }
+        int latest = latestWrittenChapterNo(chapters);
         if (latest <= 0) {
             return;
         }
@@ -159,6 +157,30 @@ public class ConsistencyRuleChecker {
                     clip("第 " + planted + " 章埋设，计划第 " + dueAt + " 章回收，当前最新第 " + latest + " 章", MAX_EVIDENCE),
                     "在近期章节里给它一个交代，或到「伏笔」页把它标记为已回收 / 放弃。"));
         }
+    }
+
+    /**
+     * 全书「写到第几章」的统一口径：<b>只认已经写出正文的章节</b>。
+     *
+     * <p>{@code t_chapter} 里同时躺着两种章：已写正文的，和「只排了大纲、正文还是空」的草稿章
+     * （自动写书是先排完整本大纲再逐章写正文，所以书的章号可能一开局就是 50）。
+     * 如果按章节表的最大 chapter_no 算进度，刚写到第 10 章的书会被当成写到第 50 章，
+     * 伏笔会在第 31 章「准时」集体误报超期——用户看到的正是「只写了一章，却提示超期 19 章」。</p>
+     *
+     * <p>{@code ChapterFactService#latestChapterNo} 用的是同一口径，改一处必须改两处。</p>
+     */
+    private static int latestWrittenChapterNo(List<ChapterEntity> chapters) {
+        int latest = 0;
+        for (ChapterEntity chapter : chapters) {
+            String content = chapter.getContent();
+            if (content == null || content.isBlank()) {
+                continue;
+            }
+            if (chapter.getChapterNo() != null && chapter.getChapterNo() > latest) {
+                latest = chapter.getChapterNo();
+            }
+        }
+        return latest;
     }
 
     /** R1 已故 / 失踪人物在之后出场。 */

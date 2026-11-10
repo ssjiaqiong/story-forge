@@ -268,10 +268,21 @@ public class ChapterFactService {
         return planned == null || planned <= 0 ? null : planned;
     }
 
+    /**
+     * 全书「写到第几章」：<b>只认已经写出正文的章节</b>。
+     *
+     * <p>自动写书是先把整本大纲排成 N 条章节记录（正文为空、状态 DRAFT），再逐章写正文。
+     * 如果按章节表的最大 chapter_no 算，刚写到第 10 章的书会被当成写到第 50 章，
+     * 伏笔就会在第 31 章「准时」集体误报超期。</p>
+     *
+     * <p>{@code ConsistencyRuleChecker#latestWrittenChapterNo} 用的是同一口径，改一处必须改两处。</p>
+     */
     private int latestChapterNo(Long novelId) {
         List<ChapterEntity> chapters = chapterMapper.selectList(Wrappers.<ChapterEntity>lambdaQuery()
                 .select(ChapterEntity::getChapterNo)
-                .eq(ChapterEntity::getNovelId, novelId));
+                .eq(ChapterEntity::getNovelId, novelId)
+                .isNotNull(ChapterEntity::getContent)
+                .apply("trim(content) <> ''"));
         int latest = 0;
         for (ChapterEntity chapter : chapters) {
             if (chapter.getChapterNo() != null && chapter.getChapterNo() > latest) {
