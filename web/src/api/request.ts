@@ -29,7 +29,9 @@ export const ErrorCodes = {
   MUST_CHANGE_PASSWORD: 20004,
   FORBIDDEN: 20006,
   /** 自动保存正文时检测到「这一章已在别处被修改」 */
-  CHAPTER_CONFLICT: 40071
+  CHAPTER_CONFLICT: 40071,
+  /** 章节已标记为「已完成」，正文与标题被锁定 */
+  CHAPTER_LOCKED: 40061
 } as const
 
 export const http: AxiosInstance = axios.create({

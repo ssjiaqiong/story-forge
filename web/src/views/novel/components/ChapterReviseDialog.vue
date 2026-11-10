@@ -35,8 +35,13 @@
             <el-tag effect="plain">大纲贴合 {{ analysis?.outlineScore ?? '—' }}</el-tag>
             <el-tag effect="plain">AI 率 {{ analysis?.aiScore ?? '—' }}</el-tag>
             <el-tag effect="plain" type="info">{{ wordCount }} 字</el-tag>
+            <el-tag v-if="chapterDone" effect="plain" type="warning">已完成</el-tag>
           </div>
         </div>
+
+        <p v-if="chapterDone" class="revise-done-hint">
+          本章已标记为「已完成」。保存改稿时会先确认再覆盖，覆盖前的正文会存为历史版本。
+        </p>
 
         <p v-if="!analysis" class="revise-warning">
           没读到本章的分析报告，先展开这一章、等报告加载完再试。
@@ -172,7 +177,9 @@
       <div v-else class="revise-footer">
         <el-button @click="step = 'select'">返回调整</el-button>
         <el-button :loading="saving" @click="generate">重新生成</el-button>
-        <el-button type="primary" :loading="saving" :disabled="!diffStats.changed" @click="save">保存并重新分析</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!diffStats.changed" @click="save">
+          {{ chapterDone ? '覆盖保存并重新分析' : '保存并重新分析' }}
+        </el-button>
       </div>
     </template>
   </el-dialog>
@@ -180,9 +187,10 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
 import { getChapter, updateChapter } from '@/api/novel-asset'
+import { ApiError, ErrorCodes } from '@/api/request'
 import {
   reviseChapter,
   type ChapterAnalysisVO,
@@ -237,9 +245,13 @@ const selected = ref<Set<string>>(new Set())
 const instruction = ref('')
 const intensity = ref<ReviseIntensity>('MEDIUM')
 const originalContent = ref('')
+/** 本章当前状态：DONE 时保存要二次确认（定稿正文默认锁定） */
+const chapterStatus = ref('')
 const result = ref<ChapterReviseVO | null>(null)
 const onlyChanges = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
+
+const chapterDone = computed(() => chapterStatus.value === 'DONE')
 
 const dialogTitle = computed(() =>
   step.value === 'diff' ? `对比修改 · 第 ${props.chapterNo} 章` : `按分析修改 · 第 ${props.chapterNo} 章`
@@ -408,6 +420,7 @@ async function openDialog() {
   try {
     const detail = await getChapter(props.chapterId)
     originalContent.value = detail.content || ''
+    chapterStatus.value = detail.status || ''
   } catch (error) {
     ElMessage.error((error as Error).message || '读取本章正文失败')
   } finally {
@@ -438,6 +451,7 @@ function reset() {
   originalContent.value = ''
   instruction.value = ''
   onlyChanges.value = false
+  chapterStatus.value = ''
 }
 
 function selectAll() {
@@ -507,21 +521,68 @@ async function generate() {
   }
 }
 
+/**
+ * 保存改稿。
+ *
+ * <p>定稿（DONE）章节的正文默认锁定，直接保存会被服务端拦（40061），所以这里先问一次：
+ * 用户点「覆盖保存」才带 {@code overwriteDone} 重发，服务端只放行这一次请求，章节状态不变；
+ * 未定稿的章节直接写，不打扰作者。</p>
+ */
 async function save() {
-  if (!result.value || !diff.value?.changed) {
+  const revised = result.value?.revisedContent
+  if (!revised || !diff.value?.changed) {
+    return
+  }
+  if (chapterDone.value && !(await confirmOverwrite())) {
     return
   }
   saving.value = true
   try {
-    await updateChapter(props.chapterId, { content: result.value.revisedContent })
+    try {
+      await putRevisedContent(revised)
+    } catch (error) {
+      // 弹窗打开之后本章才在别处被标记为完成（例如另一个标签页点了「标记完成」）：
+      // 再确认一次，用户同意就带着覆盖开关重发
+      if (!(error instanceof ApiError) || error.code !== ErrorCodes.CHAPTER_LOCKED) {
+        throw error
+      }
+      chapterStatus.value = 'DONE'
+      if (!(await confirmOverwrite())) {
+        return
+      }
+      await putRevisedContent(revised)
+    }
     ElMessage.success('正文已保存，正在重新分析本章')
-    emit('saved', { chapterId: props.chapterId, content: result.value.revisedContent })
+    emit('saved', { chapterId: props.chapterId, content: revised })
     visible.value = false
   } catch (error) {
     ElMessage.error((error as Error).message || '保存失败')
   } finally {
     saving.value = false
   }
+}
+
+function putRevisedContent(content: string) {
+  return updateChapter(props.chapterId, {
+    content,
+    overwriteDone: chapterDone.value || undefined
+  })
+}
+
+/** 覆盖前确认：返回 true 表示作者同意覆盖定稿正文 */
+function confirmOverwrite() {
+  return ElMessageBox.confirm(
+    `第 ${props.chapterNo} 章当前是「已完成」状态，保存会用改稿覆盖定稿正文。` +
+      '覆盖前的正文会存为历史版本，之后可在「历史版本」里回滚；章节状态保持「已完成」。是否覆盖？',
+    '覆盖已完成章节',
+    {
+      type: 'warning',
+      confirmButtonText: '覆盖保存',
+      cancelButtonText: '取消'
+    }
+  )
+    .then(() => true)
+    .catch(() => false)
 }
 
 function segClass(segment: DiffSegment, side: 'left' | 'right') {
@@ -633,6 +694,18 @@ onBeforeUnmount(stopTimer)
   background: var(--sf-bg-danger);
   color: var(--sf-text-danger);
   font-size: 13px;
+}
+
+/* 定稿章节的提示：不阻断操作，只提前说明保存时会二次确认 */
+.revise-done-hint {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border-left: 3px solid #f59e0b;
+  background: var(--sf-bg-tint);
+  color: var(--sf-text-regular);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .revise-toolbar {

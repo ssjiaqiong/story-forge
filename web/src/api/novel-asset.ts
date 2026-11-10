@@ -51,6 +51,11 @@ export interface ChapterPayload {
   eventIds?: string[] | null
   /** null 表示不修改，0 表示解除关联 */
   masterOutlineId?: string | number | null
+  /**
+   * 作者已确认覆盖「已完成」章节：只有改稿对比窗口在用户点过确认后才带 true。
+   * 不带则定稿章节照旧拦截（40061）。
+   */
+  overwriteDone?: boolean
 }
 
 export interface EventParticipantVO {

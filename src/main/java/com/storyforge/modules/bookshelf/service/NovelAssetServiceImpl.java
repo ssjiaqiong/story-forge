@@ -303,6 +303,11 @@ public class NovelAssetServiceImpl implements NovelAssetService {
      *
      * <p>{@code allowLocked} 只给回滚用：定稿章节不让从外部改正文，但作者自己要能撤销误操作，
      * 所以锁定判断在这里可以被内部绕过，且**不暴露成接口参数**。</p>
+     *
+     * <p>另一条绕过路径是请求体里的 {@code overwriteDone}：作者在「按分析修改」的对比窗口点保存时，
+     * 若本章是「已完成」，前端先弹确认框，确认后才带 true 重发一次。与 {@code allowLocked} 的区别是
+     * 它只作用于这一次请求，既不解锁章节（状态不变），也不会让编辑器里的自动保存跟着放行——
+     * 后者始终走 {@link #saveContent}，仍然拦。</p>
      */
     private ChapterVO updateChapter(Long chapterId, ChapterRequest request, String source,
                                     boolean allowLocked, String snapshotNote) {
@@ -311,7 +316,8 @@ public class NovelAssetServiceImpl implements NovelAssetService {
         if (request == null) {
             throw BizException.of(ErrorCode.PARAM_INVALID, "请求内容不能为空");
         }
-        if (!allowLocked && isChapterContentLocked(entity, request)) {
+        boolean overwriteDone = Boolean.TRUE.equals(request.getOverwriteDone());
+        if (!allowLocked && !overwriteDone && isChapterContentLocked(entity, request)) {
             throw BizException.of(ErrorCode.CHAPTER_LOCKED);
         }
         // 快照存的是「保存前」的内容，所以在改 entity 之前把旧值留一份

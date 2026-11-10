@@ -49,4 +49,14 @@ public class ChapterRequest {
 
     @Schema(description = "关联的总纲 id；null 表示不修改，0 表示解除关联")
     private Long masterOutlineId;
+
+    /**
+     * 是否允许覆盖「已完成」章节的正文与标题。
+     *
+     * <p>默认 false：定稿章节照旧拦截（`40061`）。只有作者在界面上明确确认
+     * 「当前章节已完成，是否覆盖」之后，前端才会带 true 重发一次——
+     * 这个开关是**一次请求**的授权，不是给章节解锁，章节状态不会被改动。</p>
+     */
+    @Schema(description = "作者已确认覆盖已完成章节：true 时放行对定稿正文/标题的修改，默认 false")
+    private Boolean overwriteDone;
 }
